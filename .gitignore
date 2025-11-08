@@ -1,1 +1,9 @@
 collection_checkpoint.csv
+venv/
+__pycache__/
+canonical_images/
+failed_redownloads_report.csv
+calibration_output/
+faiss_index/
+imgs/
+old/

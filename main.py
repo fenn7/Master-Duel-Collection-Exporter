@@ -748,15 +748,17 @@ def run_capture_loop(grid_region: Tuple[int,int,int,int],
                      checkpoint_every: int = 50,
                      checkpoint_path: str = "collection_checkpoint.csv"):
     """
-    Main capture+scroll loop.
+    Main capture+scroll loop (FAISS-based matching).
     - grid_region: (left, top, width, height) in screen coords.
-    - matcher: CanonicalMatcher instance with .match(raw_name) -> (id,name,score)
-    - Returns list of CardRecord objects (same dataclass used elsewhere).
+    - matcher: kept for backward compatibility (object with .match(raw_name) -> (id,name,score))
+               but by default uses matcher_loop_faiss() present in main.py (or imported).
+    - Returns list of CardRecord objects.
     """
     import time
     import hashlib
     import pandas as pd
     import pyautogui
+    from collections import deque
 
     seen_keys = set()
     records = []
@@ -767,6 +769,18 @@ def run_capture_loop(grid_region: Tuple[int,int,int,int],
     print(f"[run_capture_loop] Starting capture loop on region={grid_region}")
 
     start_time = time.time()
+
+    # determine if FAISS matcher function is available in this module / namespace
+    use_faiss_loop = False
+    try:
+        # matcher_loop_faiss should be defined in main.py (drop-in from prior step)
+        _ = matcher_loop_faiss  # type: ignore[name-defined]
+        use_faiss_loop = True
+    except Exception:
+        # if not present, we will fall back to the older per-thumb matcher.match(raw_name) method
+        use_faiss_loop = False
+        print("[run_capture_loop] Warning: matcher_loop_faiss not found — falling back to matcher.match per-thumb behavior.")
+
     try:
         while True:
             iterations += 1
@@ -779,21 +793,71 @@ def run_capture_loop(grid_region: Tuple[int,int,int,int],
                 time.sleep(0.5)
                 continue
 
-            # Optionally show debug info or save debug image occasionally
-            # cv2.imwrite(f"debug_full_{iterations:04d}.png", crop)
-
-            # Split into thumbnail candidates
+            # Split into thumbnail candidates (expected: list of (thumb_bgr, bbox))
             thumbs = split_grid_to_thumbs(crop)
             new_found = 0
 
-            for thumb_img, bbox in thumbs:
-                raw_name, count, _ = ocr_name_and_count(thumb_img)
-                cid, cname, score = matcher.match(raw_name)
-                # Use canonical id if available, else canonical name; include count to avoid merging different counts
-                key = (cid or cname or raw_name, int(count))
+            # If we have FAISS loop available, call it once with the full thumbnails list.
+            results = []
+            if use_faiss_loop:
+                try:
+                    # matcher_loop_faiss is expected to return a list of dicts aligned to thumbs order
+                    results = matcher_loop_faiss(thumbnails=thumbs,
+                                                 topk=6,
+                                                 art_conf_thresh=0.75,
+                                                 low_conf_thresh=0.55,
+                                                 print_progress=False,
+                                                 use_count_ocr=True)
+                except Exception as e:
+                    # If something goes wrong, fallback to per-thumb matching
+                    print(f"[run_capture_loop] matcher_loop_faiss failed: {e}. Falling back to per-thumb matcher.")
+                    use_faiss_loop = False
+                    results = []
+
+            # If the FAISS loop wasn't used (or failed), do the old per-thumb flow using matcher.match
+            if not use_faiss_loop:
+                for thumb_img, bbox in thumbs:
+                    # fallback: run your OCR+matcher.match per-thumb (preserve original behavior)
+                    try:
+                        raw_name, count, _ = ocr_name_and_count(thumb_img)
+                    except Exception:
+                        raw_name, count = "", 1
+                    try:
+                        cid, cname, score = matcher.match(raw_name)
+                    except Exception:
+                        cid, cname, score = None, None, 0.0
+                    out = {
+                        "bbox": bbox,
+                        "method": "legacy",
+                        "card_id": cid,
+                        "filename": cname,
+                        "score": float(score or 0.0),
+                        "count": int(count or 1),
+                        "neighbors": [],
+                        "raw_ocr": raw_name
+                    }
+                    results.append(out)
+
+            # Process results into CardRecord entries, dedupe via seen_keys
+            for entry in results:
+                bbox = entry.get("bbox", (0,0,0,0))
+                cid = entry.get("card_id")
+                fname = entry.get("filename") or entry.get("raw_ocr") or ""
+                score = float(entry.get("score") or 0.0)
+                count = int(entry.get("count") or 1)
+
+                # key: prefer canonical id, then filename, then raw_ocr; include count to avoid merging separate copies
+                key_id = cid or fname or entry.get("raw_ocr") or ""
+                key = (str(key_id), int(count))
+
                 if key not in seen_keys:
                     seen_keys.add(key)
-                    rec = CardRecord(canonical_id=cid, canonical_name=cname, raw_name=raw_name, count=int(count), confidence=score, bbox=bbox)
+                    rec = CardRecord(canonical_id=cid,
+                                     canonical_name=fname if fname else None,
+                                     raw_name=entry.get("raw_ocr") or "",
+                                     count=count,
+                                     confidence=score,
+                                     bbox=bbox)
                     records.append(rec)
                     new_found += 1
 
@@ -808,8 +872,8 @@ def run_capture_loop(grid_region: Tuple[int,int,int,int],
             else:
                 # content changed
                 if new_found == 0:
-                    # still treat as possibly no-new but reset less aggressively
-                    consecutive_no_new += 0
+                    # no new but content changed — keep consecutive_no_new unchanged (soft reset)
+                    pass
                 else:
                     consecutive_no_new = 0
 
@@ -817,8 +881,13 @@ def run_capture_loop(grid_region: Tuple[int,int,int,int],
 
             print(f"[capture #{iterations}] thumbs={len(thumbs)} new={new_found} total={len(records)} consecutive_no_new={consecutive_no_new}")
             recent_new = records[-new_found:] if new_found > 0 else []
-            
-            live_progress_summary(records, iterations, start_time, recent_new)
+
+            # live summary (reuse your existing function)
+            try:
+                live_progress_summary(records, iterations, start_time, recent_new)
+            except Exception as e:
+                # non-fatal if summary fails
+                print(f"[run_capture_loop] live_progress_summary failed: {e}")
 
             # Periodic checkpoint save to CSV in case of crash
             if iterations % checkpoint_every == 0 and records:
@@ -893,6 +962,236 @@ def run_capture_loop(grid_region: Tuple[int,int,int,int],
     
     # Optional Google Sheets: uncomment and provide credentials file
     # export_to_gsheet(records, "MasterDuel Collection", "path_to_service_account.json")
+
+# FAISS version
+# Put this in main.py (or import it) and call matcher_loop_faiss(thumbnails, ...)
+# Requirements: art_match_faiss.py (from previous step), numpy, opencv-python, pytesseract (optional for fallback)
+# pip install numpy opencv-python pytesseract
+# Ensure ids.npy exists next to your FAISS index (created when building the index)
+
+import os
+import numpy as np
+import cv2
+import pytesseract
+import difflib
+from tqdm import tqdm
+
+# try import art-match module (the script from earlier)
+try:
+    from art_match_faiss import match_thumbnail_bgr
+except Exception as e:
+    raise ImportError("Cannot import art_match_faiss.match_thumbnail_bgr — make sure art_match_faiss.py is in PATH and built artifacts exist.") from e
+
+IDS_PATH = "ids.npy"  # created by build_faiss_index.py
+# Optionally load mapping of index -> filename
+try:
+    _IDS = np.load(IDS_PATH, allow_pickle=True)
+    _IDS_LIST = [str(x) for x in _IDS.tolist()]
+except Exception:
+    _IDS_LIST = None
+
+# ----- small helper: extract a likely digits badge area and OCR digits only -----
+def extract_count_from_thumb(thumb_bgr):
+    """
+    Attempt to extract a copy-count number from a thumbnail.
+    Heuristic: many Master Duel UIs put a small badge in top-right or bottom-right.
+    This attempts both regions and uses pytesseract to find digits.
+    Returns integer count (default 1) and a confidence flag.
+    """
+    h, w = thumb_bgr.shape[:2]
+    # check a small square in the top-right and bottom-right (tunable)
+    candidates = [
+        thumb_bgr[int(0.03*h):int(0.25*h), int(0.65*w):int(0.98*w)],  # top-right region
+        thumb_bgr[int(0.6*h):int(0.98*h), int(0.65*w):int(0.98*w)],  # bottom-right region
+    ]
+    for crop in candidates:
+        if crop.size == 0:
+            continue
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        # threshold to isolate digits/badge
+        _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # scale up to help OCR
+        th = cv2.resize(th, (0,0), fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        # configure tesseract to only look for digits
+        try:
+            txt = pytesseract.image_to_string(th, config="--psm 7 -c tessedit_char_whitelist=0123456789")
+            txt = txt.strip()
+            if txt:
+                # filter non-digits, return first numeric group
+                import re
+                m = re.search(r"(\d+)", txt)
+                if m:
+                    return int(m.group(1)), True
+        except Exception:
+            pass
+    return 1, False
+
+# ----- small helper: OCR name fallback and fuzzy-match against canonical names -----
+def ocr_name_and_fuzzy_match(thumb_bgr, candidates_list=None, nbest=5):
+    """
+    Run a lightweight OCR on the thumbnail to get a name-like string, then fuzzy-match
+    against the provided candidates_list (list of canonical filenames or names).
+    If candidates_list is None, this will return the raw OCR string.
+    Returns (best_match_id, best_match_name, score, raw_ocr).
+    Score is difflib SequenceMatcher ratio (0..1), or 0 if no match.
+    """
+    # very small preproc to increase OCR quality for text
+    gray = cv2.cvtColor(thumb_bgr, cv2.COLOR_BGR2GRAY)
+    # focus on top half where name text is likely displayed (adjust if your UI shows it differently)
+    h = gray.shape[0]
+    crop = gray[int(0.45*h):int(0.75*h), :]  # tune depending on where name appears
+    try:
+        txt = pytesseract.image_to_string(crop, config="--psm 6")
+        txt = txt.strip()
+    except Exception:
+        txt = ""
+    if not txt:
+        return None, None, 0.0, ""
+    # Normalize OCR string
+    raw = " ".join(txt.split())
+    if not candidates_list:
+        return None, None, 0.0, raw
+
+    # Build a candidate display-name list (strip leading id_ and extension if present)
+    canon_names = []
+    mapping = {}
+    for item in candidates_list:
+        # item might be "12345_Card Name.jpg" or just "Card Name.jpg"
+        name = item
+        if "_" in item:
+            # keep part after first underscore as candidate
+            name = item.split("_", 1)[1]
+        name = name.rsplit(".", 1)[0]
+        canon_names.append(name)
+        mapping[name] = item
+
+    # Use difflib.get_close_matches first for speed
+    matches = difflib.get_close_matches(raw, canon_names, n=nbest, cutoff=0.4)
+    if matches:
+        best = matches[0]
+        # compute ratio
+        ratio = difflib.SequenceMatcher(None, raw, best).ratio()
+        matched_item = mapping[best]
+        # try to extract id from matched_item if present
+        card_id = matched_item.split("_", 1)[0] if "_" in matched_item else None
+        return card_id, best, float(ratio), raw
+
+    # fallback: do a brute force best ratio check
+    best_ratio = 0.0
+    best_name = None
+    best_item = None
+    for name in canon_names:
+        r = difflib.SequenceMatcher(None, raw, name).ratio()
+        if r > best_ratio:
+            best_ratio = r
+            best_name = name
+            best_item = mapping[name]
+    if best_name:
+        card_id = best_item.split("_", 1)[0] if "_" in best_item else None
+        return card_id, best_name, float(best_ratio), raw
+    return None, None, 0.0, raw
+
+# ----- main drop-in loop replacement -----
+def matcher_loop_faiss(thumbnails,
+                       topk=6,
+                       art_conf_thresh=0.75,
+                       low_conf_thresh=0.55,
+                       print_progress=True,
+                       use_count_ocr=True,
+                       ids_list=_IDS_LIST):
+    """
+    thumbnails: iterable/list of (thumb_bgr, bbox) where thumb_bgr is an OpenCV BGR numpy array.
+    Returns: list of dicts (one per thumbnail) with keys:
+      - 'bbox' : original bbox
+      - 'method': 'faiss'|'faiss_low'|'ocr_fallback'
+      - 'card_id' (str or None)
+      - 'filename' (str or None)  -- canonical filename or matched name
+      - 'score' (float)  -- similarity or fuzzy-match score
+      - 'count' (int)
+      - 'neighbors' : list of (card_id, filename, score) from FAISS (topk) -- may be empty
+      - 'raw_ocr': OCR text when OCR fallback used (may be "")
+    """
+    results = []
+    iterator = thumbnails
+    if print_progress:
+        iterator = tqdm(thumbnails, desc="Matching thumbnails")
+
+    for thumb_bgr, bbox in iterator:
+        entry = {
+            "bbox": bbox,
+            "method": None,
+            "card_id": None,
+            "filename": None,
+            "score": 0.0,
+            "count": 1,
+            "neighbors": [],
+            "raw_ocr": ""
+        }
+
+        # 1) run FAISS matcher (expects BGR input per art_match_faiss design)
+        try:
+            neighbors = match_thumbnail_bgr(thumb_bgr, topk=topk)
+        except Exception as e:
+            neighbors = []
+        # neighbors: list of (card_id, fname, score)
+        if neighbors:
+            entry["neighbors"] = neighbors
+            top_card_id, top_fname, top_score = neighbors[0]
+            entry["score"] = float(top_score)
+            # Accept strong art matches
+            if top_score >= art_conf_thresh:
+                entry["method"] = "faiss"
+                entry["card_id"] = str(top_card_id)
+                entry["filename"] = str(top_fname)
+            elif top_score >= low_conf_thresh:
+                # borderline: return neighbors for voting or manual review
+                entry["method"] = "faiss_low"
+                entry["card_id"] = str(top_card_id)
+                entry["filename"] = str(top_fname)
+            else:
+                # fallthrough to OCR fallback (name-based)
+                entry["method"] = "faiss_no_good"
+        else:
+            entry["method"] = "no_faiss"
+
+        # 2) count extraction (independent) -- do for all matches to get counts
+        if use_count_ocr:
+            try:
+                count, count_conf = extract_count_from_thumb(thumb_bgr)
+            except Exception:
+                count, count_conf = 1, False
+            entry["count"] = int(count if count and count>0 else 1)
+
+        # 3) OCR fallback (only when no good art match)
+        if entry["method"] in ("faiss_no_good", "no_faiss"):
+            # try OCR name, fuzzy match against ids_list if available
+            if ids_list:
+                card_id, name, score, raw_ocr = ocr_name_and_fuzzy_match(thumb_bgr, candidates_list=ids_list, nbest=6)
+            else:
+                card_id, name, score, raw_ocr = ocr_name_and_fuzzy_match(thumb_bgr, candidates_list=None)
+            entry["raw_ocr"] = raw_ocr
+            if card_id and score > 0.45:
+                entry["method"] = "ocr_fallback"
+                entry["card_id"] = str(card_id)
+                entry["filename"] = name
+                entry["score"] = float(score)
+            else:
+                entry["method"] = "no_confident_match"
+
+        # 4) print a short live status line (for monitoring)
+        if print_progress:
+            if entry["method"] in ("faiss", "faiss_low"):
+                print_str = f"[{entry['method']}] id={entry['card_id']} score={entry['score']:.3f} count={entry['count']}"
+            elif entry["method"] == "ocr_fallback":
+                print_str = f"[ocr_fallback] id={entry['card_id']} score={entry['score']:.3f} raw='{entry['raw_ocr']}' count={entry['count']}"
+            else:
+                print_str = f"[NO_MATCH] count={entry['count']} raw_ocr='{entry['raw_ocr']}'"
+            # use flush to make realtime monitoring easier
+            print(print_str, flush=True)
+
+        results.append(entry)
+
+    return results
 
 if __name__ == "__main__":
     main()
