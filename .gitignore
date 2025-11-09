@@ -7,3 +7,4 @@ calibration_output/
 faiss_index/
 imgs/
 old/
+identified_cards.csv

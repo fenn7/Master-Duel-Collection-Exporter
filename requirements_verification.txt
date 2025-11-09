@@ -1,0 +1,34 @@
+# Requirements for multi-stage verification system
+# Install with: pip install -r requirements_verification.txt
+
+# Core dependencies (already required)
+opencv-python>=4.8.0
+numpy>=1.24.0
+pillow>=10.0.0
+pytesseract>=0.3.10
+mss>=9.0.0
+pyautogui>=0.9.54
+pygetwindow>=0.0.9
+pandas>=2.0.0
+requests>=2.31.0
+rapidfuzz>=3.0.0
+
+# Deep learning for feature extraction
+tensorflow>=2.13.0
+# OR use tensorflow-cpu if you don't have GPU:
+# tensorflow-cpu>=2.13.0
+
+# FAISS for similarity search
+faiss-cpu>=1.7.4
+# OR use faiss-gpu if you have CUDA:
+# faiss-gpu>=1.7.4
+
+# Image quality metrics
+scikit-image>=0.21.0
+
+# Perceptual hashing
+imagehash>=4.3.1
+
+# Optional: for better OCR
+# easyocr>=1.7.0
+# paddleocr>=2.7.0

@@ -1,0 +1,7 @@
+﻿card_number,card_id,filename,confidence,verified,manual_review,user_corrected,rejected,uncertain
+1,,,0.0,False,True,False,True,False
+2,,,0.0,False,True,False,True,False
+3,,,0.0,False,True,False,True,False
+4,,,0.0,False,True,False,True,False
+5,,,0.0,False,True,False,True,False
+6,13312312321,84965420_Drytron Meteor Shower.jpg,0.5696540388029229,False,True,True,False,False
