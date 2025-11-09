@@ -555,14 +555,826 @@ def export_to_gsheet(records: List[CardRecord], sheet_name: str, creds_json: str
         ws.append_row([r.canonical_id, r.canonical_name, r.raw_name, r.count, r.confidence, r.bbox[0], r.bbox[1], r.bbox[2], r.bbox[3]])
     print("Uploaded sheet:", sh.url)
 
+# ---------- New Function: Extract First Row of Cards ----------
+
+def detect_card_borders(card_region_img: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+    """
+    Detect the precise borders of a card within a region image.
+    Handles normal, glossy, prismatic borders, and glow animations.
+    Uses multiple robust techniques to find the card's rectangular border.
+    Returns the bounding box (x, y, w, h) relative to card_region_img that contains just the card,
+    or None if borders cannot be detected.
+    """
+    if card_region_img.size == 0:
+        return None
+    
+    h, w = card_region_img.shape[:2]
+    region_area = w * h
+    
+    # Convert to grayscale if needed
+    if len(card_region_img.shape) == 3:
+        gray = cv2.cvtColor(card_region_img, cv2.COLOR_BGR2GRAY)
+        bgr = card_region_img.copy()
+    else:
+        gray = card_region_img.copy()
+        bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    
+    all_candidates = []
+    
+    # Method 1: Gradient magnitude-based edge detection (works well with glossy/prismatic borders)
+    # Compute gradients in both directions
+    grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    magnitude = np.sqrt(grad_x**2 + grad_y**2)
+    max_mag = np.max(magnitude)
+    if max_mag > 0:
+        magnitude = np.uint8(255 * magnitude / max_mag)
+    else:
+        magnitude = np.zeros_like(gray, dtype=np.uint8)
+    
+    # Threshold gradient magnitude to find strong edges (borders)
+    for thresh_val in [30, 50, 70, 100]:
+        _, edges = cv2.threshold(magnitude, thresh_val, 255, cv2.THRESH_BINARY)
+        # Close gaps in borders
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=3)
+        # Dilate slightly to connect nearby edges
+        dilated = cv2.dilate(closed, kernel, iterations=1)
+        
+        contours, hierarchy = cv2.findContours(dilated, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            continue
+        
+        for i, cnt in enumerate(contours):
+            # Skip inner contours (holes), focus on outer borders
+            if hierarchy is not None and hierarchy[0][i][3] != -1:
+                continue
+            
+            x, y, cw, ch = cv2.boundingRect(cnt)
+            area = cw * ch
+            contour_area = cv2.contourArea(cnt)
+            
+            if area < 0.20 * region_area or area > 0.98 * region_area:
+                continue
+            
+            aspect = cw / ch if ch > 0 else 0
+            if not (0.35 < aspect < 2.8):
+                continue
+            
+            # Calculate how rectangular the contour is
+            rect_area = cv2.contourArea(cnt)
+            if rect_area > 0:
+                hull = cv2.convexHull(cnt)
+                hull_area = cv2.contourArea(hull)
+                if hull_area > 0:
+                    extent = rect_area / hull_area
+                    if extent > 0.6:  # Reasonably rectangular
+                        all_candidates.append((x, y, cw, ch, area, extent, 'gradient'))
+    
+    # Method 2: Multi-scale Canny edge detection (handles varying border brightness)
+    for blur_size in [(3, 3), (5, 5), (7, 7)]:
+        blurred = cv2.GaussianBlur(gray, blur_size, 0)
+        # Try multiple Canny thresholds to catch different border types
+        for low, high in [(20, 60), (40, 100), (60, 150), (80, 200), (100, 250)]:
+            edges = cv2.Canny(blurred, low, high)
+            # Strong morphological closing to connect glow effects
+            kernel_large = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+            kernel_med = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+            closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_large, iterations=2)
+            closed = cv2.dilate(closed, kernel_med, iterations=1)
+            
+            contours, hierarchy = cv2.findContours(closed, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                continue
+            
+            for i, cnt in enumerate(contours):
+                if hierarchy is not None and hierarchy[0][i][3] != -1:
+                    continue
+                
+                x, y, cw, ch = cv2.boundingRect(cnt)
+                area = cw * ch
+                contour_area = cv2.contourArea(cnt)
+                
+                if area < 0.20 * region_area or area > 0.98 * region_area:
+                    continue
+                
+                aspect = cw / ch if ch > 0 else 0
+                if not (0.35 < aspect < 2.8):
+                    continue
+                
+                # Check rectangularity
+                epsilon = 0.01 * cv2.arcLength(cnt, True)
+                approx = cv2.approxPolyDP(cnt, epsilon, True)
+                rect_area = cv2.contourArea(cnt)
+                if rect_area > 0:
+                    hull = cv2.convexHull(cnt)
+                    hull_area = cv2.contourArea(hull)
+                    if hull_area > 0:
+                        extent = rect_area / hull_area
+                        if extent > 0.5:
+                            # Prefer contours closer to 4 vertices (rectangle)
+                            vertex_score = 1.0 / (1.0 + abs(len(approx) - 4))
+                            all_candidates.append((x, y, cw, ch, area, extent * vertex_score, 'canny'))
+    
+    # Method 3: Color-based detection (handles prismatic/glossy borders with distinct colors)
+    if len(card_region_img.shape) == 3:
+        # Try multiple color spaces
+        color_spaces = [
+            ('BGR', bgr),
+            ('HSV', cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)),
+            ('LAB', cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)),
+        ]
+        
+        for space_name, img_space in color_spaces:
+            # Work with each channel separately
+            for channel_idx in range(3):
+                channel = img_space[:, :, channel_idx]
+                
+                # Ensure channel is uint8
+                if channel.dtype != np.uint8:
+                    channel = channel.astype(np.uint8)
+                
+                # Try multiple thresholding methods
+                # Otsu's method
+                try:
+                    _, thresh1 = cv2.threshold(channel, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                except Exception:
+                    continue
+                
+                # Adaptive threshold (only works if image is large enough)
+                try:
+                    if channel.shape[0] > 11 and channel.shape[1] > 11:
+                        thresh2 = cv2.adaptiveThreshold(channel, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                                         cv2.THRESH_BINARY, 11, 2)
+                    else:
+                        thresh2 = thresh1.copy()
+                except Exception:
+                    thresh2 = thresh1.copy()
+                
+                for thresh_img in [thresh1, thresh2, cv2.bitwise_not(thresh1), cv2.bitwise_not(thresh2)]:
+                    # Clean up the thresholded image
+                    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+                    cleaned = cv2.morphologyEx(thresh_img, cv2.MORPH_CLOSE, kernel, iterations=2)
+                    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel, iterations=1)
+                    
+                    contours, hierarchy = cv2.findContours(cleaned, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                    if not contours:
+                        continue
+                    
+                    for i, cnt in enumerate(contours):
+                        if hierarchy is not None and hierarchy[0][i][3] != -1:
+                            continue
+                        
+                        x, y, cw, ch = cv2.boundingRect(cnt)
+                        area = cw * ch
+                        
+                        if area < 0.20 * region_area or area > 0.98 * region_area:
+                            continue
+                        
+                        aspect = cw / ch if ch > 0 else 0
+                        if not (0.35 < aspect < 2.8):
+                            continue
+                        
+                        contour_area = cv2.contourArea(cnt)
+                        if contour_area > 0:
+                            hull = cv2.convexHull(cnt)
+                            hull_area = cv2.contourArea(hull)
+                            if hull_area > 0:
+                                extent = contour_area / hull_area
+                                if extent > 0.6:
+                                    all_candidates.append((x, y, cw, ch, area, extent, f'color_{space_name}'))
+    
+    # Method 4: HoughLines-based rectangle detection (for straight borders)
+    edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 50, 150)
+    lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=int(min(w, h) * 0.3), 
+                            minLineLength=int(min(w, h) * 0.2), maxLineGap=10)
+    
+    if lines is not None and len(lines) >= 4:
+        # Group lines by orientation (horizontal/vertical)
+        horizontal_lines = []
+        vertical_lines = []
+        
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            angle = np.abs(np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi)
+            if angle < 30 or angle > 150:
+                horizontal_lines.append((y1 + y2) / 2)
+            else:
+                vertical_lines.append((x1 + x2) / 2)
+        
+        if len(horizontal_lines) >= 2 and len(vertical_lines) >= 2:
+            # Find top/bottom and left/right boundaries
+            horizontal_lines.sort()
+            vertical_lines.sort()
+            
+            # Take outer boundaries
+            top_y = int(min(horizontal_lines[:2]))
+            bottom_y = int(max(horizontal_lines[-2:]))
+            left_x = int(min(vertical_lines[:2]))
+            right_x = int(max(vertical_lines[-2:]))
+            
+            cw = right_x - left_x
+            ch = bottom_y - top_y
+            
+            if (0.20 * region_area < cw * ch < 0.98 * region_area and 
+                0.35 < cw / ch < 2.8 and left_x >= 0 and top_y >= 0 and 
+                right_x <= w and bottom_y <= h):
+                all_candidates.append((left_x, top_y, cw, ch, cw * ch, 0.9, 'hough'))
+    
+    # Method 5: Laplacian of Gaussian (LoG) for border detection
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    laplacian = cv2.Laplacian(blurred, cv2.CV_64F)
+    laplacian = np.uint8(np.absolute(laplacian))
+    
+    _, edges_log = cv2.threshold(laplacian, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    closed_log = cv2.morphologyEx(edges_log, cv2.MORPH_CLOSE, kernel, iterations=3)
+    
+    contours, hierarchy = cv2.findContours(closed_log, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        for i, cnt in enumerate(contours):
+            if hierarchy is not None and hierarchy[0][i][3] != -1:
+                continue
+            
+            x, y, cw, ch = cv2.boundingRect(cnt)
+            area = cw * ch
+            
+            if 0.20 * region_area < area < 0.98 * region_area:
+                aspect = cw / ch if ch > 0 else 0
+                if 0.35 < aspect < 2.8:
+                    contour_area = cv2.contourArea(cnt)
+                    if contour_area > 0:
+                        hull = cv2.convexHull(cnt)
+                        hull_area = cv2.contourArea(hull)
+                        if hull_area > 0:
+                            extent = contour_area / hull_area
+                            if extent > 0.5:
+                                all_candidates.append((x, y, cw, ch, area, extent, 'log'))
+    
+    # Evaluate all candidates and pick the best one
+    if all_candidates:
+        # Remove duplicates and similar boxes (merge if overlap > 80%)
+        unique_candidates = []
+        for candidate in all_candidates:
+            x, y, cw, ch, area, score, method = candidate
+            is_duplicate = False
+            
+            for ux, uy, uw, uh, uarea, uscore, umethod in unique_candidates:
+                # Check overlap
+                overlap_x = max(0, min(x + cw, ux + uw) - max(x, ux))
+                overlap_y = max(0, min(y + ch, uy + uh) - max(y, uy))
+                overlap_area = overlap_x * overlap_y
+                union_area = area + uarea - overlap_area
+                
+                if union_area > 0 and overlap_area / union_area > 0.8:
+                    # Keep the one with better score
+                    if score > uscore:
+                        unique_candidates.remove((ux, uy, uw, uh, uarea, uscore, umethod))
+                        unique_candidates.append(candidate)
+                    is_duplicate = True
+                    break
+            
+            if not is_duplicate:
+                unique_candidates.append(candidate)
+        
+        # Sort by score (rectangularity/extent) and area appropriateness
+        # Prefer candidates that are:
+        # 1. More rectangular (higher extent score)
+        # 2. Reasonably sized (not too small, not too large)
+        # 3. Centered in the region
+        def candidate_score(cand):
+            x, y, cw, ch, area, extent_score, method = cand
+            size_score = 1.0 - abs(area / region_area - 0.6)  # Prefer ~60% of region
+            center_x, center_y = w / 2, h / 2
+            card_center_x, card_center_y = x + cw / 2, y + ch / 2
+            center_score = 1.0 - (abs(card_center_x - center_x) / w + abs(card_center_y - center_y) / h) / 2
+            return extent_score * 0.5 + size_score * 0.3 + center_score * 0.2
+        
+        unique_candidates.sort(key=candidate_score, reverse=True)
+        
+        # Take the best candidate
+        x, y, cw, ch, area, score, method_name = unique_candidates[0]
+        print(f"[detect_card_borders] Best candidate: method={method_name}, score={score:.3f}, size={cw}x{ch}")
+        
+        # Add small padding to ensure we capture the full border
+        padding = 3
+        x = max(0, x - padding)
+        y = max(0, y - padding)
+        cw = min(w - x, cw + 2 * padding)
+        ch = min(h - y, ch + 2 * padding)
+        
+        return (x, y, cw, ch)
+    
+    # Fallback Method: Conservative edge-based approach with very loose criteria
+    # This is a last resort that should catch most cards even with difficult borders
+    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+    edges = cv2.Canny(blurred, 10, 50)  # Very sensitive thresholds
+    
+    # Large kernel to close any gaps
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+    closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=4)
+    closed = cv2.dilate(closed, kernel, iterations=2)
+    
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        # Find the largest contour that's reasonably sized
+        candidates = []
+        for cnt in contours:
+            x, y, cw, ch = cv2.boundingRect(cnt)
+            area = cw * ch
+            
+            if area < 0.15 * region_area or area > 0.98 * region_area:
+                continue
+            
+            aspect = cw / ch if ch > 0 else 0
+            if 0.3 < aspect < 3.0:  # Very loose aspect ratio
+                candidates.append((x, y, cw, ch, area))
+        
+        if candidates:
+            # Sort by area and take the largest reasonable one
+            candidates.sort(key=lambda c: c[4], reverse=True)
+            x, y, cw, ch, _ = candidates[0]
+            
+            # Add small padding
+            padding = 2
+            x = max(0, x - padding)
+            y = max(0, y - padding)
+            cw = min(w - x, cw + 2 * padding)
+            ch = min(h - y, ch + 2 * padding)
+            
+            print(f"[detect_card_borders] Fallback method found border: size={cw}x{ch}")
+            return (x, y, cw, ch)
+    
+    # If even fallback fails, return None
+    print("[detect_card_borders] All detection methods including fallback failed")
+    return None
+
+def find_and_extract_first_row_cards(win) -> bool:
+    """
+    Find the header template, locate the card collection area below it,
+    detect the first row of 6 cards, and save each card thumbnail to test_identifier folder.
+    Returns True if successful, False otherwise.
+    """
+    print("[find_and_extract_first_row_cards] Starting card detection...")
+    
+    # Step 1: Get window coordinates and handle negative coords
+    left, top, width, height = win.left, win.top, win.width, win.height
+    
+    if left < 0 or top < 0:
+        print(f"[find_and_extract_first_row_cards] Window at negative coords ({left},{top}). Attempting to move window to primary monitor (8,8).")
+        try:
+            win.moveTo(8, 8)
+            time.sleep(0.35)
+            left, top, width, height = win.left, win.top, win.width, win.height
+            print(f"[find_and_extract_first_row_cards] Window moved to {left},{top} (size {width}x{height})")
+        except Exception as e:
+            print(f"[find_and_extract_first_row_cards] Could not move window: {e}. Proceeding with original coords.")
+    
+    # Step 2: Grab full window screenshot
+    try:
+        full_window_img = grab_region((left, top, width, height))
+        print(f"[find_and_extract_first_row_cards] Captured window screenshot: {full_window_img.shape}")
+    except Exception as e:
+        print(f"[find_and_extract_first_row_cards] Failed to grab window region: {e}")
+        return False
+    
+    # Step 3: Load header template
+    header_template_path = Path("templates/header.PNG")
+    if not header_template_path.exists():
+        print(f"[find_and_extract_first_row_cards] Header template not found at {header_template_path}")
+        return False
+    
+    header_template = cv2.imread(str(header_template_path))
+    if header_template is None:
+        print(f"[find_and_extract_first_row_cards] Failed to load header template from {header_template_path}")
+        return False
+    
+    print(f"[find_and_extract_first_row_cards] Loaded header template: {header_template.shape}")
+    
+    # Step 4: Find header in window using template matching
+    gray_window = cv2.cvtColor(full_window_img, cv2.COLOR_BGR2GRAY)
+    gray_header = cv2.cvtColor(header_template, cv2.COLOR_BGR2GRAY)
+    
+    res = cv2.matchTemplate(gray_window, gray_header, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+    
+    if max_val < 0.65:
+        print(f"[find_and_extract_first_row_cards] Header template match confidence too low: {max_val:.3f} (threshold: 0.65)")
+        return False
+    
+    header_x, header_y = max_loc
+    _, header_h = gray_header.shape[1], gray_header.shape[0]
+    print(f"[find_and_extract_first_row_cards] Found header at window-relative position: ({header_x}, {header_y}) with confidence {max_val:.3f}")
+    
+    # Step 5: Define card collection area below header
+    # Collection area starts slightly below the header template
+    collection_start_y = header_y + header_h + 10  # 10 pixels gap after header
+    collection_end_y = height  # Go to bottom of window
+    collection_start_x = header_x  # Start at header's left edge
+    collection_end_x = width  # Go to right edge of window
+    
+    # Extract collection area region
+    collection_region_img = full_window_img[collection_start_y:collection_end_y, collection_start_x:collection_end_x]
+    
+    if collection_region_img.size == 0:
+        print("[find_and_extract_first_row_cards] Collection region is empty")
+        return False
+    
+    print(f"[find_and_extract_first_row_cards] Collection region: {collection_region_img.shape} (window-relative: x={collection_start_x}, y={collection_start_y})")
+    
+    # Step 6: First, detect the right edge of the card collection area by finding the slider background
+    def detect_collection_right_edge(img: np.ndarray) -> int:
+        """
+        Detect where the card collection area ends by finding the slider background.
+        The slider background has RGB values around (39, 39, 45).
+        The slider element itself is RGB (187, 187, 187).
+        Scans from right to left to find where the slider background starts.
+        Returns the x-coordinate of the right edge (exclusive - the first pixel of slider area).
+        """
+        if len(img.shape) != 3:
+            # If not BGR, return original width
+            return img.shape[1]
+        
+        h, w = img.shape[:2]
+        
+        # Target RGB values for slider background: (39, 39, 45)
+        # In BGR format (OpenCV): (45, 39, 39)
+        slider_bg_bgr = np.array([45, 39, 39], dtype=np.uint8)
+        
+        # Allow some tolerance for color matching (±10 for each channel)
+        color_tolerance = 10
+        
+        # Scan from right to left, checking vertical strips
+        # We'll look for a consistent vertical strip that matches the slider background color
+        scan_start = w - 5  # Start 5 pixels from the right edge
+        scan_end = max(0, w - 300)  # Scan up to 300 pixels from right
+        
+        # For each x position, check if the vertical strip matches slider background
+        slider_start_x = None
+        for x in range(scan_start, scan_end, -1):
+            # Sample pixels along the vertical strip at this x position
+            # Take samples from multiple heights to ensure consistency
+            sample_heights = [h // 4, h // 2, 3 * h // 4]
+            matches = 0
+            
+            for y in sample_heights:
+                if y >= h:
+                    continue
+                pixel = img[y, x]
+                
+                # Check if pixel is close to slider background color
+                b_match = abs(int(pixel[0]) - int(slider_bg_bgr[0])) <= color_tolerance
+                g_match = abs(int(pixel[1]) - int(slider_bg_bgr[1])) <= color_tolerance
+                r_match = abs(int(pixel[2]) - int(slider_bg_bgr[2])) <= color_tolerance
+                
+                if b_match and g_match and r_match:
+                    matches += 1
+            
+            # If at least 2 out of 3 sample points match, we found the slider background
+            if matches >= 2:
+                slider_start_x = x
+                # Continue scanning to find the leftmost edge of the slider background
+                continue
+            elif slider_start_x is not None:
+                # We were in slider background, now we're not - this is the boundary
+                # Return the position just after the last non-slider pixel
+                print(f"[detect_collection_right_edge] Found slider background starting at x={slider_start_x}, boundary at x={x}")
+                return x
+        
+        # Fallback: Look for the slider element itself (RGB 187, 187, 187 = BGR 187, 187, 187)
+        slider_element_bgr = np.array([187, 187, 187], dtype=np.uint8)
+        
+        for x in range(scan_start, scan_end, -1):
+            sample_heights = [h // 4, h // 2, 3 * h // 4]
+            matches = 0
+            
+            for y in sample_heights:
+                if y >= h:
+                    continue
+                pixel = img[y, x]
+                
+                # Check if pixel is close to slider element color
+                b_match = abs(int(pixel[0]) - int(slider_element_bgr[0])) <= color_tolerance
+                g_match = abs(int(pixel[1]) - int(slider_element_bgr[1])) <= color_tolerance
+                r_match = abs(int(pixel[2]) - int(slider_element_bgr[2])) <= color_tolerance
+                
+                if b_match and g_match and r_match:
+                    matches += 1
+            
+            # If we found the slider element, the background should be just to the left
+            if matches >= 2:
+                # Move left a bit to find the actual background edge
+                edge_x = max(scan_end, x - 20)
+                print(f"[detect_collection_right_edge] Found slider element at x={x}, using edge at x={edge_x}")
+                return edge_x
+        
+        # Final fallback: subtract 57 pixels from width (as user specified)
+        fallback_edge = w - 57
+        print(f"[detect_collection_right_edge] Color detection failed, using fallback: {fallback_edge} (width - 57)")
+        return max(0, fallback_edge)
+    
+    # Detect the actual collection width (excluding slider)
+    collection_right_edge = detect_collection_right_edge(collection_region_img)
+    print(f"[find_and_extract_first_row_cards] Detected collection right edge at x={collection_right_edge}")
+    
+    # Detect the left border (grey area) to exclude it from the row image
+    def detect_collection_left_edge(img: np.ndarray) -> int:
+        """
+        Detect where the left grey border ends and the card collection area begins.
+        Scans from left to right to find where the darker border transitions to the collection area.
+        Returns the x-coordinate where the collection area starts.
+        """
+        if len(img.shape) != 3:
+            return 0
+        
+        h, w = img.shape[:2]
+        
+        # Sample the far-left area to get border characteristics
+        border_sample_width = min(20, w // 10)
+        border_sample = img[:, 0:border_sample_width]
+        border_gray = cv2.cvtColor(border_sample, cv2.COLOR_BGR2GRAY)
+        avg_border_brightness = np.mean(border_gray)
+        
+        # Sample the middle area to get collection characteristics
+        collection_sample_x = w // 3
+        collection_sample_width = min(100, w // 4)
+        collection_sample = img[:, collection_sample_x:collection_sample_x + collection_sample_width]
+        collection_gray = cv2.cvtColor(collection_sample, cv2.COLOR_BGR2GRAY)
+        avg_collection_brightness = np.mean(collection_gray)
+        
+        print(f"[detect_collection_left_edge] Border brightness={avg_border_brightness:.1f}, Collection brightness={avg_collection_brightness:.1f}")
+        
+        # Scan from left to right looking for transition
+        window_size = 3
+        for x in range(0, min(150, w - window_size)):
+            strip = img[:, x:x+window_size]
+            strip_gray = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY)
+            strip_brightness = np.mean(strip_gray)
+            
+            # If brightness changes significantly from border, we found the edge
+            if abs(strip_brightness - avg_border_brightness) > 15:
+                print(f"[detect_collection_left_edge] Found left edge at x={x}")
+                return x
+        
+        # If no edge found, return 0 (no border)
+        print(f"[detect_collection_left_edge] No left border detected, using x=0")
+        return 0
+    
+    collection_left_edge = detect_collection_left_edge(collection_region_img)
+    print(f"[find_and_extract_first_row_cards] Detected collection left edge at x={collection_left_edge}")
+    
+    # Step 7: Detect first row of 6 cards
+    # Convert to grayscale for contour detection
+    gray_collection = cv2.cvtColor(collection_region_img, cv2.COLOR_BGR2GRAY)
+    h_collection, w_collection = gray_collection.shape
+    
+    # Use the detected edges as the effective collection area for card detection
+    w_collection_effective = collection_right_edge - collection_left_edge
+    x_collection_offset = collection_left_edge
+    
+    # Method 1: Try contour detection
+    blurred = cv2.GaussianBlur(gray_collection, (3, 3), 0)
+    edges = cv2.Canny(blurred, 40, 120)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    dilated = cv2.dilate(edges, kernel, iterations=1)
+    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    card_boxes = []
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        area = w * h
+        
+        # Filter by area and aspect ratio
+        if area < MIN_CARD_AREA:
+            continue
+        if area > MAX_CARD_AREA_RATIO * (w_collection * h_collection):
+            continue
+        aspect = w / h if h > 0 else 0
+        if not (CARD_ASPECT_MIN < aspect < CARD_ASPECT_MAX):
+            continue
+        
+        card_boxes.append((x, y, w, h, area))
+    
+    # Process detected boxes
+    if len(card_boxes) >= 6:
+        # Remove overlapping boxes, keeping the largest
+        card_boxes_sorted = sorted(card_boxes, key=lambda b: b[4], reverse=True)  # Sort by area
+        kept_boxes = []
+        for b in card_boxes_sorted:
+            x, y, w, h, area = b
+            overlap = False
+            for k in kept_boxes:
+                kx, ky, kw, kh, _ = k
+                # Check if boxes overlap significantly (more than 30% overlap)
+                overlap_x = max(0, min(x + w, kx + kw) - max(x, kx))
+                overlap_y = max(0, min(y + h, ky + kh) - max(y, ky))
+                overlap_area = overlap_x * overlap_y
+                union_area = w * h + kw * kh - overlap_area
+                if union_area > 0 and (overlap_area / float(union_area)) > 0.3:
+                    overlap = True
+                    break
+            if not overlap:
+                kept_boxes.append(b)
+        
+        # Sort by y-coordinate (top to bottom), then by x-coordinate (left to right)
+        kept_boxes = sorted(kept_boxes, key=lambda b: (b[1], b[0]))
+        
+        # Take only the first row (cards with similar y-coordinates)
+        if len(kept_boxes) > 0:
+            first_row_y = kept_boxes[0][1]
+            # Allow some tolerance for y-coordinate (cards may not be perfectly aligned)
+            y_tolerance = 30
+            first_row_boxes = [b for b in kept_boxes if abs(b[1] - first_row_y) <= y_tolerance]
+            # Sort by x-coordinate to get left-to-right order
+            first_row_boxes = sorted(first_row_boxes, key=lambda b: b[0])
+            # Take first 6 cards
+            if len(first_row_boxes) >= 6:
+                card_boxes = first_row_boxes[:6]
+            else:
+                card_boxes = first_row_boxes
+                print(f"[find_and_extract_first_row_cards] Only found {len(card_boxes)} cards in first row via contour detection")
+    
+    # Method 2: If contour detection didn't find 6 cards, use grid-based approach
+    if len(card_boxes) < 6:
+        print(f"[find_and_extract_first_row_cards] Contour detection found {len(card_boxes)} cards, trying grid-based detection...")
+        # Calculate approximate card dimensions based on effective collection width (6 columns)
+        card_width = w_collection_effective // 6
+        
+        # Estimate card height - cards are roughly square, but might be slightly taller
+        # Cards are typically square-ish, so start with card_width
+        card_height = int(card_width * 1.1)  # Slightly taller than wide
+        
+        # Create 6 boxes for the first row
+        card_boxes = []
+        for col in range(6):
+            x = collection_left_edge + col * card_width
+            y = 0  # First row starts at top of collection region
+            w = card_width
+            h = min(h_collection, int(card_width * 1.4))  # Use full height available, up to 1.4x width
+            
+            # Make sure we don't exceed bounds
+            if x + w > collection_right_edge:
+                w = collection_right_edge - x
+            if y + h > h_collection:
+                h = h_collection - y
+            
+            if w > 10 and h > 10:  # Valid dimensions
+                card_boxes.append((x, y, w, h, w * h))
+        
+        print(f"[find_and_extract_first_row_cards] Grid-based detection created {len(card_boxes)} card boxes")
+    
+    if len(card_boxes) < 6:
+        print(f"[find_and_extract_first_row_cards] Could not detect 6 cards. Found {len(card_boxes)} cards.")
+        return False
+    
+    print(f"[find_and_extract_first_row_cards] Detected {len(card_boxes)} cards in first row")
+    
+    # Step 8: Save a screenshot of the entire first row for visualization
+    output_dir = Path("test_identifier")
+    output_dir.mkdir(exist_ok=True)
+    
+    # Calculate the bounding box that encompasses all cards in the first row
+    if len(card_boxes) > 0:
+        # Find the min/max coordinates of all card boxes
+        min_x = min(box[0] for box in card_boxes)
+        min_y = min(box[1] for box in card_boxes)
+        max_x = max(box[0] + box[2] for box in card_boxes)  # x + width
+        max_y = max(box[1] + box[3] for box in card_boxes)  # y + height
+        
+        # Add some padding around the row for context, but respect the left edge
+        row_padding = 15
+        row_x = max(collection_left_edge, min_x - row_padding)
+        row_y = 0  # Start from top of collection region to capture full height
+        
+        # Calculate row width based on the rightmost card position plus padding
+        # This ensures we only capture the card row itself, not the slider area
+        calculated_row_w = max_x - row_x + row_padding
+        
+        # Use the minimum of calculated width and detected edge to ensure we don't exceed bounds
+        max_allowed_w = collection_right_edge - row_x
+        row_w = min(calculated_row_w, max_allowed_w, w_collection - row_x)
+        # Use full height of the first row area
+        row_h = max(max_y + row_padding, int(card_width * 1.4)) if len(card_boxes) > 0 else h_collection
+        
+        print(f"[find_and_extract_first_row_cards] Row width: calculated={calculated_row_w}, limited to={row_w} (collection edge at {collection_right_edge})")
+        
+        # Extract the entire first row region
+        first_row_img = collection_region_img[row_y:row_y+row_h, row_x:row_x+row_w].copy()
+        
+        # Create a copy with bounding boxes drawn for visualization
+        first_row_with_boxes = first_row_img.copy()
+        for idx, (bx, by, bw, bh, _) in enumerate(card_boxes, 1):
+            # Convert card box coordinates from collection_region_img to first_row_img coordinates
+            # row_x = min_x - row_padding, so the offset is row_padding
+            # The card box (bx, by) in collection coordinates becomes (bx - row_x, by - row_y) in row coordinates
+            box_x_in_row = bx - row_x
+            box_y_in_row = by - row_y
+            
+            # Ensure coordinates are within the row image bounds
+            box_x_in_row = max(0, min(box_x_in_row, row_w - 1))
+            box_y_in_row = max(0, min(box_y_in_row, row_h - 1))
+            box_w_in_row = min(bw, row_w - box_x_in_row)
+            box_h_in_row = min(bh, row_h - box_y_in_row)
+            
+            # Draw rectangle around detected card
+            cv2.rectangle(first_row_with_boxes, 
+                         (box_x_in_row, box_y_in_row), 
+                         (box_x_in_row + box_w_in_row, box_y_in_row + box_h_in_row), 
+                         (0, 255, 0), 2)  # Green rectangle
+            
+            # Add card number label
+            cv2.putText(first_row_with_boxes, f"Card {idx}", 
+                       (box_x_in_row + 5, box_y_in_row + 20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        
+        # Save the full row screenshot with bounding boxes
+        row_output_path = output_dir / "first_row_full.png"
+        cv2.imwrite(str(row_output_path), first_row_with_boxes)
+        print(f"[find_and_extract_first_row_cards] Saved full first row screenshot with bounding boxes to {row_output_path}")
+        print(f"[find_and_extract_first_row_cards] First row region: x={row_x}, y={row_y}, w={row_w}, h={row_h} (collection-relative)")
+        
+        # Also calculate and print screen coordinates for the full row
+        screen_row_x = left + collection_start_x + row_x
+        screen_row_y = top + collection_start_y + row_y
+        screen_row_bottom_right_x = screen_row_x + row_w
+        screen_row_bottom_right_y = screen_row_y + row_h
+        print(f"[find_and_extract_first_row_cards] First row screen coordinates: ({screen_row_x}, {screen_row_y}) to ({screen_row_bottom_right_x}, {screen_row_bottom_right_y})")
+    
+    # Step 8: Extract and save each card with precise border detection
+    print(f"[find_and_extract_first_row_cards] Saving individual cards to {output_dir}")
+    
+    for idx, (x, y, w, h, _) in enumerate(card_boxes, 1):
+        # Extract a region slightly larger than the detected card to ensure we have context for border detection
+        # Add padding to ensure we capture the full card even if detection was slightly off
+        padding = 10
+        region_x = max(0, x - padding)
+        region_y = max(0, y - padding)
+        region_w = min(w_collection - region_x, w + 2 * padding)
+        region_h = min(h_collection - region_y, h + 2 * padding)
+        
+        # Extract the region containing the card
+        card_region = collection_region_img[region_y:region_y+region_h, region_x:region_x+region_w].copy()
+        
+        # Detect the precise borders of the card within this region
+        border_box = detect_card_borders(card_region)
+        
+        if border_box is None:
+            # Fallback: if border detection fails, try a simple approach
+            # Use the center portion of the detected region, slightly shrunk to avoid background
+            print(f"[find_and_extract_first_row_cards] Warning: Could not detect borders for card {idx}, using conservative fallback")
+            
+            # Shrink the bounding box by 5% on each side to avoid background
+            shrink_factor = 0.05
+            shrink_x = int(w * shrink_factor)
+            shrink_y = int(h * shrink_factor)
+            
+            border_x = padding + shrink_x
+            border_y = padding + shrink_y
+            border_w = max(10, w - 2 * shrink_x)
+            border_h = max(10, h - 2 * shrink_y)
+            
+            # Ensure we don't exceed region bounds
+            border_x = max(0, min(border_x, region_w - 1))
+            border_y = max(0, min(border_y, region_h - 1))
+            border_w = min(border_w, region_w - border_x)
+            border_h = min(border_h, region_h - border_y)
+        else:
+            border_x, border_y, border_w, border_h = border_box
+            # Ensure border box is within the region
+            border_x = max(0, min(border_x, region_w - 1))
+            border_y = max(0, min(border_y, region_h - 1))
+            border_w = min(border_w, region_w - border_x)
+            border_h = min(border_h, region_h - border_y)
+        
+        # Extract only the card area (within its borders)
+        card_img = card_region[border_y:border_y+border_h, border_x:border_x+border_w].copy()
+        
+        # Calculate screen coordinates for the final card image
+        final_x = left + collection_start_x + region_x + border_x
+        final_y = top + collection_start_y + region_y + border_y
+        final_w = border_w
+        final_h = border_h
+        screen_bottom_right_x = final_x + final_w
+        screen_bottom_right_y = final_y + final_h
+        
+        print(f"[find_and_extract_first_row_cards] Card {idx}:")
+        print(f"  Detected size: {final_w}x{final_h} pixels")
+        print(f"  Screen Top-Left: ({final_x}, {final_y})")
+        print(f"  Screen Bottom-Right: ({screen_bottom_right_x}, {screen_bottom_right_y})")
+        
+        # Save card image (only the card, no background)
+        output_path = output_dir / f"card_{idx:02d}.png"
+        cv2.imwrite(str(output_path), card_img)
+        print(f"[find_and_extract_first_row_cards] Saved card {idx} to {output_path}")
+    
+    print(f"[find_and_extract_first_row_cards] Successfully extracted and saved {len(card_boxes)} cards")
+    return True
+
 # ---------- Entrypoint ----------
 
 def main():
     print("Master Duel collection scraper - starting")
-    # Load canonical DB
-    entries = load_ygojson_web_only()
-    matcher = CanonicalMatcher(entries)
-
+    
     # Find game window
     win = find_game_window(WINDOW_TITLE_KEYWORD)
     if not win:
@@ -570,27 +1382,40 @@ def main():
         return
 
     print(f"Detected window: {win.title} @ {win.left},{win.top} size {win.width}x{win.height}")
-    print("Detecting collection grid region automatically...")
-    grid = detect_grid_for_window(win)
-    if not grid:
-        print("Automatic detection failed. Please create a template image of the collection header and place it into ./templates/")
-        # as fallback ask user to manually provide region
-        try:
-            print("Please move the mouse to the top-left of the grid and press Enter...")
-            input()
-            lx, ly = pyautogui.position()
-            print("Now move the mouse to the bottom-right of the grid and press Enter...")
-            input()
-            rx, ry = pyautogui.position()
-            grid = (min(lx, rx), min(ly, ry), abs(rx-lx), abs(ry-ly))
-        except Exception:
-            print("Manual region selection failed. Exiting.")
-            return
-
-    print(f"Using grid region: {grid}")
-    print("Starting capture loop. Do not use the mouse or keyboard to interact with the game while capture runs.")
-    records = run_capture_loop(grid, matcher)
-    export_to_csv(records)
+    
+    # New functionality: Find and extract first row of 6 cards
+    success = find_and_extract_first_row_cards(win)
+    if success:
+        print("[main] Successfully extracted first row of cards!")
+    else:
+        print("[main] Failed to extract first row of cards. Please check the error messages above.")
+    
+    # COMMENTED OUT: Old functionality for full collection scraping
+    # # Load canonical DB
+    # entries = load_ygojson_web_only()
+    # matcher = CanonicalMatcher(entries)
+    # 
+    # print("Detecting collection grid region automatically...")
+    # grid = detect_grid_for_window(win)
+    # if not grid:
+    #     print("Automatic detection failed. Please create a template image of the collection header and place it into ./templates/")
+    #     # as fallback ask user to manually provide region
+    #     try:
+    #         print("Please move the mouse to the top-left of the grid and press Enter...")
+    #         input()
+    #         lx, ly = pyautogui.position()
+    #         print("Now move the mouse to the bottom-right of the grid and press Enter...")
+    #         input()
+    #         rx, ry = pyautogui.position()
+    #         grid = (min(lx, rx), min(ly, ry), abs(rx-lx), abs(ry-ly))
+    #     except Exception:
+    #         print("Manual region selection failed. Exiting.")
+    #         return
+    # 
+    # print(f"Using grid region: {grid}")
+    # print("Starting capture loop. Do not use the mouse or keyboard to interact with the game while capture runs.")
+    # records = run_capture_loop(grid, matcher)
+    # export_to_csv(records)
 
 import cv2
 import numpy as np
@@ -796,6 +1621,26 @@ def run_capture_loop(grid_region: Tuple[int,int,int,int],
             # Split into thumbnail candidates (expected: list of (thumb_bgr, bbox))
             thumbs = split_grid_to_thumbs(crop)
             new_found = 0
+            
+            # Print thumbnail sizes and screen coordinates
+            print(f"\n[Thumbnail Detection - Iteration {iterations}] Found {len(thumbs)} card thumbnails:")
+            grid_left, grid_top, _, _ = grid_region
+            for idx, (thumb_img, bbox) in enumerate(thumbs, 1):
+                # bbox is (x, y, w, h) relative to the grid crop
+                rel_x, rel_y, rel_w, rel_h = bbox
+                
+                # Convert to screen coordinates
+                screen_top_left_x = grid_left + rel_x
+                screen_top_left_y = grid_top + rel_y
+                screen_bottom_right_x = grid_left + rel_x + rel_w
+                screen_bottom_right_y = grid_top + rel_y + rel_h
+                
+                # Print size and coordinates
+                print(f"  Card {idx}:")
+                print(f"    Size: {rel_w}x{rel_h} pixels")
+                print(f"    Screen Top-Left: ({screen_top_left_x}, {screen_top_left_y})")
+                print(f"    Screen Bottom-Right: ({screen_bottom_right_x}, {screen_bottom_right_y})")
+                print(f"    Relative to grid: ({rel_x}, {rel_y}) to ({rel_x + rel_w}, {rel_y + rel_h})")
 
             # If we have FAISS loop available, call it once with the full thumbnails list.
             results = []
