@@ -985,140 +985,112 @@ def find_and_extract_first_row_cards(win) -> bool:
     # Step 6: First, detect the right edge of the card collection area by finding the slider background
     def detect_collection_right_edge(img: np.ndarray) -> int:
         """
-        Detect where the card collection area ends by finding the slider background.
-        The slider background has RGB values around (39, 39, 45).
-        The slider element itself is RGB (187, 187, 187).
-        Scans from right to left to find where the slider background starts.
-        Returns the x-coordinate of the right edge (exclusive - the first pixel of slider area).
+        Simple and effective detection of where card collection ends before slider area.
+        Uses brightness analysis to find dark slider area and subtracts a buffer to exclude
+        the gray area completely.
         """
         if len(img.shape) != 3:
-            # If not BGR, return original width
             return img.shape[1]
-        
+
         h, w = img.shape[:2]
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # Target RGB values for slider background: (39, 39, 45)
-        # In BGR format (OpenCV): (45, 39, 39)
-        slider_bg_bgr = np.array([45, 39, 39], dtype=np.uint8)
+        # Calculate column-wise average brightness
+        col_brightness = gray.mean(axis=0)
         
-        # Allow some tolerance for color matching (±10 for each channel)
-        color_tolerance = 10
+        # Calculate baseline brightness from left portion (card collection area)
+        baseline_sample_width = min(100, w // 4)
+        baseline_brightness = col_brightness[:baseline_sample_width].mean()
         
-        # Scan from right to left, checking vertical strips
-        # We'll look for a consistent vertical strip that matches the slider background color
-        scan_start = w - 5  # Start 5 pixels from the right edge
-        scan_end = max(0, w - 300)  # Scan up to 300 pixels from right
+        print(f"[detect_collection_right_edge] Baseline brightness: {baseline_brightness:.1f}")
         
-        # For each x position, check if the vertical strip matches slider background
-        slider_start_x = None
-        for x in range(scan_start, scan_end, -1):
-            # Sample pixels along the vertical strip at this x position
-            # Take samples from multiple heights to ensure consistency
-            sample_heights = [h // 4, h // 2, 3 * h // 4]
-            matches = 0
-            
-            for y in sample_heights:
-                if y >= h:
-                    continue
-                pixel = img[y, x]
-                
-                # Check if pixel is close to slider background color
-                b_match = abs(int(pixel[0]) - int(slider_bg_bgr[0])) <= color_tolerance
-                g_match = abs(int(pixel[1]) - int(slider_bg_bgr[1])) <= color_tolerance
-                r_match = abs(int(pixel[2]) - int(slider_bg_bgr[2])) <= color_tolerance
-                
-                if b_match and g_match and r_match:
-                    matches += 1
-            
-            # If at least 2 out of 3 sample points match, we found the slider background
-            if matches >= 2:
-                slider_start_x = x
-                # Continue scanning to find the leftmost edge of the slider background
-                continue
-            elif slider_start_x is not None:
-                # We were in slider background, now we're not - this is the boundary
-                # Return the position just after the last non-slider pixel
-                print(f"[detect_collection_right_edge] Found slider background starting at x={slider_start_x}, boundary at x={x}")
-                return x
+        # Look for significant brightness drop (dark slider area)
+        darkness_threshold = baseline_brightness * 0.65  # Slider is much darker
+        scan_width = min(200, w // 3)
         
-        # Fallback: Look for the slider element itself (RGB 187, 187, 187 = BGR 187, 187, 187)
-        slider_element_bgr = np.array([187, 187, 187], dtype=np.uint8)
+        for x in range(w - 10, max(0, w - scan_width), -1):
+            if col_brightness[x] < darkness_threshold:
+                # Found dark area - this is likely the slider
+                # Move boundary left by a percentage of width to exclude ALL gray slider background
+                buffer_pixels = int(w * 0.12)  # 12% of width buffer to eliminate slider area
+                boundary = max(0, x - buffer_pixels)
+                print(f"[detect_collection_right_edge] Found dark area at x={x}, boundary at x={boundary} ({buffer_pixels}px buffer, 12% of width)")
+                return boundary
         
-        for x in range(scan_start, scan_end, -1):
-            sample_heights = [h // 4, h // 2, 3 * h // 4]
-            matches = 0
-            
-            for y in sample_heights:
-                if y >= h:
-                    continue
-                pixel = img[y, x]
-                
-                # Check if pixel is close to slider element color
-                b_match = abs(int(pixel[0]) - int(slider_element_bgr[0])) <= color_tolerance
-                g_match = abs(int(pixel[1]) - int(slider_element_bgr[1])) <= color_tolerance
-                r_match = abs(int(pixel[2]) - int(slider_element_bgr[2])) <= color_tolerance
-                
-                if b_match and g_match and r_match:
-                    matches += 1
-            
-            # If we found the slider element, the background should be just to the left
-            if matches >= 2:
-                # Move left a bit to find the actual background edge
-                edge_x = max(scan_end, x - 20)
-                print(f"[detect_collection_right_edge] Found slider element at x={x}, using edge at x={edge_x}")
-                return edge_x
-        
-        # Final fallback: subtract 57 pixels from width (as user specified)
-        fallback_edge = w - 57
-        print(f"[detect_collection_right_edge] Color detection failed, using fallback: {fallback_edge} (width - 57)")
-        return max(0, fallback_edge)
+        # Fallback: Use 89% of width
+        print(f"[detect_collection_right_edge] No dark area found, triggering 89% fallback")
+        return None
     
     # Detect the actual collection width (excluding slider)
     collection_right_edge = detect_collection_right_edge(collection_region_img)
-    print(f"[find_and_extract_first_row_cards] Detected collection right edge at x={collection_right_edge}")
+    
+    # Handle fallback case where slider detection failed
+    use_fallback_crop = False
+    if collection_right_edge is None:
+        use_fallback_crop = True
+        # Use full width for detection, but crop to 89% for final output
+        collection_right_edge = collection_region_img.shape[1]  # Full width for now
+        print(f"[find_and_extract_first_row_cards] Slider detection failed, using 89% width fallback")
+    else:
+        print(f"[find_and_extract_first_row_cards] Detected collection right edge at x={collection_right_edge}")
     
     # Detect the left border (grey area) to exclude it from the row image
     def detect_collection_left_edge(img: np.ndarray) -> int:
         """
-        Detect where the left grey border ends and the card collection area begins.
-        Scans from left to right to find where the darker border transitions to the collection area.
-        Returns the x-coordinate where the collection area starts.
+        Detect where the thin left border ends and the card collection area begins.
+        The border is typically a thin dark line or slightly different colored area.
         """
         if len(img.shape) != 3:
             return 0
         
         h, w = img.shape[:2]
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # Sample the far-left area to get border characteristics
-        border_sample_width = min(20, w // 10)
-        border_sample = img[:, 0:border_sample_width]
-        border_gray = cv2.cvtColor(border_sample, cv2.COLOR_BGR2GRAY)
-        avg_border_brightness = np.mean(border_gray)
+        # Calculate column-wise brightness to find transition
+        col_brightness = gray.mean(axis=0)
         
-        # Sample the middle area to get collection characteristics
-        collection_sample_x = w // 3
-        collection_sample_width = min(100, w // 4)
-        collection_sample = img[:, collection_sample_x:collection_sample_x + collection_sample_width]
-        collection_gray = cv2.cvtColor(collection_sample, cv2.COLOR_BGR2GRAY)
-        avg_collection_brightness = np.mean(collection_gray)
+        # Look for baseline collection brightness from further right
+        baseline_start = min(60, w // 4)
+        baseline_end = min(120, w // 3)
+        if baseline_end > baseline_start and baseline_end < w:
+            baseline_brightness = col_brightness[baseline_start:baseline_end].mean()
+        else:
+            baseline_brightness = col_brightness[min(30, w//2):].mean()
         
-        print(f"[detect_collection_left_edge] Border brightness={avg_border_brightness:.1f}, Collection brightness={avg_collection_brightness:.1f}")
+        print(f"[detect_collection_left_edge] Baseline brightness: {baseline_brightness:.1f}")
         
-        # Scan from left to right looking for transition
-        window_size = 3
-        for x in range(0, min(150, w - window_size)):
-            strip = img[:, x:x+window_size]
-            strip_gray = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY)
-            strip_brightness = np.mean(strip_gray)
+        # Look for thin border (typically 1-10 pixels wide)
+        max_border_width = min(15, w // 8)
+        brightness_threshold = baseline_brightness * 0.9  # 90% of collection brightness
+        
+        # Find first position where brightness consistently matches collection area
+        for x in range(max_border_width):
+            if x >= w:
+                break
             
-            # If brightness changes significantly from border, we found the edge
-            if abs(strip_brightness - avg_border_brightness) > 15:
-                print(f"[detect_collection_left_edge] Found left edge at x={x}")
-                return x
+            # Check current position and a few pixels ahead for consistency
+            check_width = min(5, w - x)
+            if check_width > 0:
+                avg_brightness = col_brightness[x:x+check_width].mean()
+                
+                # If this position and nearby are bright enough, this is likely collection start
+                if avg_brightness >= brightness_threshold:
+                    # Verify consistency - check that it doesn't drop significantly in next few pixels
+                    consistent = True
+                    extended_check = min(10, w - x)
+                    if extended_check > check_width:
+                        extended_brightness = col_brightness[x:x+extended_check].mean()
+                        if extended_brightness < brightness_threshold * 0.85:
+                            consistent = False
+                    
+                    if consistent:
+                        print(f"[detect_collection_left_edge] Found collection start at x={x}")
+                        return x
         
-        # If no edge found, return 0 (no border)
-        print(f"[detect_collection_left_edge] No left border detected, using x=0")
-        return 0
+        # Fallback: skip a small border width
+        fallback_edge = min(3, w // 30)
+        print(f"[detect_collection_left_edge] Using fallback left edge at x={fallback_edge}")
+        return fallback_edge
     
     collection_left_edge = detect_collection_left_edge(collection_region_img)
     print(f"[find_and_extract_first_row_cards] Detected collection left edge at x={collection_left_edge}")
@@ -1261,6 +1233,16 @@ def find_and_extract_first_row_cards(win) -> bool:
         # Extract the entire first row region
         first_row_img = collection_region_img[row_y:row_y+row_h, row_x:row_x+row_w].copy()
         
+        # Apply 89% width fallback cropping if slider detection failed
+        if use_fallback_crop:
+            original_width = first_row_img.shape[1]
+            cropped_width = int(original_width * 0.89)
+            first_row_img = first_row_img[:, :cropped_width]
+            print(f"[find_and_extract_first_row_cards] Applied 89% width fallback crop: {original_width} -> {cropped_width} pixels")
+            
+            # Update row_w for the visualization boxes
+            row_w = cropped_width
+        
         # Create a copy with bounding boxes drawn for visualization
         first_row_with_boxes = first_row_img.copy()
         for idx, (bx, by, bw, bh, _) in enumerate(card_boxes, 1):
@@ -1349,7 +1331,12 @@ def find_and_extract_first_row_cards(win) -> bool:
         # Extract only the card area (within its borders)
         card_img = card_region[border_y:border_y+border_h, border_x:border_x+border_w].copy()
         
-        # Calculate screen coordinates for the final card image
+        # Resize card to standard 70x100 pixels
+        target_width = 70
+        target_height = 100
+        card_img = cv2.resize(card_img, (target_width, target_height), interpolation=cv2.INTER_AREA)
+        
+        # Calculate screen coordinates for the final card image (before resize)
         final_x = left + collection_start_x + region_x + border_x
         final_y = top + collection_start_y + region_y + border_y
         final_w = border_w
