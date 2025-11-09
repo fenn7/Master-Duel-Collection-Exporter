@@ -17,6 +17,7 @@ Test locally, do not upload screenshots without consent.
 import time
 import json
 import os
+import pickle
 from pathlib import Path
 from collections import defaultdict
 from dataclasses import dataclass
@@ -1268,15 +1269,16 @@ def find_and_extract_first_row_cards(win) -> bool:
             # row_x = min_x - row_padding, so the offset is row_padding
             # The card box (bx, by) in collection coordinates becomes (bx - row_x, by - row_y) in row coordinates
             box_x_in_row = bx - row_x
-            box_y_in_row = by - row_y
             
-            # Ensure coordinates are within the row image bounds
-            box_x_in_row = max(0, min(box_x_in_row, row_w - 1))
-            box_y_in_row = max(0, min(box_y_in_row, row_h - 1))
+            # For visualization, extend boxes to cover the full height of the row image
+            box_y_in_row = 0  # Start from top of row image
             box_w_in_row = min(bw, row_w - box_x_in_row)
-            box_h_in_row = min(bh, row_h - box_y_in_row)
+            box_h_in_row = row_h  # Extend to full height of row image
             
-            # Draw rectangle around detected card
+            # Ensure x coordinate is within bounds
+            box_x_in_row = max(0, min(box_x_in_row, row_w - 1))
+            
+            # Draw rectangle around detected card (full height)
             cv2.rectangle(first_row_with_boxes, 
                          (box_x_in_row, box_y_in_row), 
                          (box_x_in_row + box_w_in_row, box_y_in_row + box_h_in_row), 
@@ -1284,7 +1286,7 @@ def find_and_extract_first_row_cards(win) -> bool:
             
             # Add card number label
             cv2.putText(first_row_with_boxes, f"Card {idx}", 
-                       (box_x_in_row + 5, box_y_in_row + 20), 
+                       (box_x_in_row + 5, 20), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         
         # Save the full row screenshot with bounding boxes
@@ -1362,18 +1364,205 @@ def find_and_extract_first_row_cards(win) -> bool:
         print(f"  Screen Top-Left: ({final_x}, {final_y})")
         print(f"  Screen Bottom-Right: ({screen_bottom_right_x}, {screen_bottom_right_y})")
         
+        # Resize card image to exactly 70x100 pixels before saving
+        target_width = 70
+        target_height = 100
+        card_img_resized = cv2.resize(card_img, (target_width, target_height), interpolation=cv2.INTER_AREA)
+        
+        # Apply JPEG compression to match FAISS index training (quality=50)
+        # This is critical for matching accuracy
+        jpeg_quality = 50
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality]
+        _, encoded = cv2.imencode('.jpg', card_img_resized, encode_param)
+        card_img_final = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        
+        print(f"  Resized to: {target_width}x{target_height} pixels (JPEG quality: {jpeg_quality})")
+        
         # Save card image (only the card, no background)
         output_path = output_dir / f"card_{idx:02d}.png"
-        cv2.imwrite(str(output_path), card_img)
+        cv2.imwrite(str(output_path), card_img_final)
         print(f"[find_and_extract_first_row_cards] Saved card {idx} to {output_path}")
     
     print(f"[find_and_extract_first_row_cards] Successfully extracted and saved {len(card_boxes)} cards")
-    return True
+    return True, card_boxes
 
 # ---------- Entrypoint ----------
 
+# ---------- FAISS Card Matcher Integration ----------
+
+class CardMatcher:
+    """Fast card matching using FAISS index."""
+    
+    def __init__(self, index_dir="faiss_index"):
+        """Load pre-built FAISS index and metadata."""
+        print(f"[CardMatcher] Loading index from {index_dir}...")
+        
+        index_path = Path(index_dir)
+        
+        # Check if index exists
+        if not index_path.exists():
+            raise FileNotFoundError(f"FAISS index not found at {index_path}. Please run build_index.py first.")
+        
+        # Load config
+        with open(index_path / "config.json", "r") as f:
+            self.config = json.load(f)
+        
+        # Load FAISS index
+        import faiss
+        self.index = faiss.read_index(str(index_path / "cards.index"))
+        
+        # Load metadata
+        with open(index_path / "metadata.pkl", "rb") as f:
+            self.metadata = pickle.load(f)
+        
+        # Load feature extractor
+        self._init_extractor()
+        
+        # OCR for copy count (lazy load)
+        self.ocr = None
+        
+        print(f"[CardMatcher] Index loaded: {self.index.ntotal:,} vectors")
+        print(f"[CardMatcher] Ready for matching!")
+    
+    def _init_extractor(self):
+        """Initialize feature extractor with same model as training."""
+        try:
+            import tensorflow as tf
+            from tensorflow.keras.applications import MobileNetV3Small
+            
+            input_size = tuple(self.config["model_input_size"])
+            
+            self.model = MobileNetV3Small(
+                input_shape=(*input_size, 3),
+                include_top=False,
+                weights='imagenet',
+                pooling='avg'
+            )
+            self.input_size = input_size
+        except ImportError:
+            raise ImportError("TensorFlow is required for FAISS matching. Please install: pip install tensorflow")
+    
+    def _extract_features(self, img_bgr):
+        """Extract features from image."""
+        # Resize
+        img = cv2.resize(img_bgr, self.input_size, interpolation=cv2.INTER_LINEAR)
+        
+        # BGR to RGB
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        # Normalize
+        img = img.astype(np.float32) / 255.0
+        
+        # Add batch dimension
+        img = np.expand_dims(img, axis=0)
+        
+        # Extract
+        features = self.model.predict(img, verbose=0)[0]
+        
+        # L2 normalize
+        features = features / (np.linalg.norm(features) + 1e-8)
+        
+        return features
+    
+    def _extract_artwork(self, thumb_bgr):
+        """Extract artwork region from thumbnail (same as training)."""
+        h, w = thumb_bgr.shape[:2]
+        
+        artwork_region = self.config["artwork_region"]
+        count_region = self.config["count_region"]
+        
+        # Create mask
+        mask = np.ones((h, w), dtype=np.uint8) * 255
+        
+        # Mask count box only
+        x1, y1 = int(w * count_region[0]), int(h * count_region[1])
+        x2, y2 = int(w * count_region[2]), int(h * count_region[3])
+        mask[y1:y2, x1:x2] = 0
+        
+        # Apply mask
+        masked = cv2.bitwise_and(thumb_bgr, thumb_bgr, mask=mask)
+        
+        # Crop to artwork
+        x1, y1 = int(w * artwork_region[0]), int(h * artwork_region[1])
+        x2, y2 = int(w * artwork_region[2]), int(h * artwork_region[3])
+        artwork = masked[y1:y2, x1:x2]
+        
+        return artwork
+    
+    def match(self, thumb_bgr, topk=5):
+        """Match a card thumbnail to database."""
+        # Extract artwork
+        artwork = self._extract_artwork(thumb_bgr)
+        
+        # Extract features
+        features = self._extract_features(artwork)
+        features = features.reshape(1, -1).astype('float32')
+        
+        # Search index
+        similarities, indices = self.index.search(features, topk * 4)
+        
+        # Deduplicate by card_id
+        seen = {}
+        for sim, idx in zip(similarities[0], indices[0]):
+            if idx < 0:
+                continue
+            
+            meta = self.metadata[idx]
+            card_id = meta["card_id"]
+            
+            if card_id not in seen or sim > seen[card_id][1]:
+                seen[card_id] = (meta["filename"], float(sim))
+            
+            if len(seen) >= topk:
+                break
+        
+        results = [(cid, fname, score) for cid, (fname, score) in seen.items()]
+        results.sort(key=lambda x: x[2], reverse=True)
+        
+        return results[:topk]
+    
+    def extract_copy_count(self, thumb_bgr):
+        """Extract copy count from bottom-right corner using OCR."""
+        h, w = thumb_bgr.shape[:2]
+        count_region = self.config["count_region"]
+        
+        # Extract count box region
+        x1, y1 = int(w * count_region[0]), int(h * count_region[1])
+        x2, y2 = int(w * count_region[2]), int(h * count_region[3])
+        count_box = thumb_bgr[y1:y2, x1:x2]
+        
+        # Enhance for OCR
+        gray = cv2.cvtColor(count_box, cv2.COLOR_BGR2GRAY)
+        # Invert if needed (white text on dark background)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        
+        # Use pytesseract for simple number extraction
+        try:
+            custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789x'
+            text = pytesseract.image_to_string(binary, config=custom_config)
+            text = text.strip().replace('x', '').replace('X', '')
+            
+            import re
+            numbers = re.findall(r'\d+', text)
+            if numbers:
+                count = int(numbers[0])
+                if 1 <= count <= 3:  # Valid range for Yu-Gi-Oh
+                    return count
+        except Exception:
+            pass
+        
+        return 1  # Default to 1 if OCR fails
+
 def main():
     print("Master Duel collection scraper - starting")
+    
+    # Initialize FAISS matcher
+    try:
+        matcher = CardMatcher(index_dir="faiss_index")
+    except Exception as e:
+        print(f"[main] Warning: Could not initialize FAISS matcher: {e}")
+        print(f"[main] Continuing without card identification...")
+        matcher = None
     
     # Find game window
     win = find_game_window(WINDOW_TITLE_KEYWORD)
@@ -1384,9 +1573,61 @@ def main():
     print(f"Detected window: {win.title} @ {win.left},{win.top} size {win.width}x{win.height}")
     
     # New functionality: Find and extract first row of 6 cards
-    success = find_and_extract_first_row_cards(win)
+    result = find_and_extract_first_row_cards(win)
+    if isinstance(result, tuple):
+        success, card_boxes = result
+    else:
+        success = result
+        card_boxes = []
+    
     if success:
         print("[main] Successfully extracted first row of cards!")
+        
+        # Process cards with FAISS matcher if available
+        if matcher is not None:
+            print("\n" + "="*60)
+            print("CARD IDENTIFICATION RESULTS")
+            print("="*60)
+            
+            output_dir = Path("test_identifier")
+            card_collection = {}  # {card_name: total_count}
+            
+            for idx in range(1, 7):  # Process 6 cards
+                card_path = output_dir / f"card_{idx:02d}.png"
+                if not card_path.exists():
+                    continue
+                
+                # Load card image
+                card_img = cv2.imread(str(card_path))
+                if card_img is None:
+                    continue
+                
+                # Match card
+                matches = matcher.match(card_img, topk=1)
+                if not matches:
+                    print(f"Card {idx}: Unknown card")
+                    continue
+                
+                card_id, card_name, confidence = matches[0]
+                
+                # Extract copy count
+                copy_count = matcher.extract_copy_count(card_img)
+                
+                print(f"Card {idx}: {card_name} (confidence: {confidence:.3f}, copies: {copy_count})")
+                
+                # Aggregate counts
+                if card_name in card_collection:
+                    card_collection[card_name] += copy_count
+                else:
+                    card_collection[card_name] = copy_count
+            
+            # Print summary
+            print("\n" + "="*60)
+            print("ROW SUMMARY (Aggregated)")
+            print("="*60)
+            for card_name, total_count in sorted(card_collection.items()):
+                print(f"{card_name} x{total_count}")
+            print("="*60 + "\n")
     else:
         print("[main] Failed to extract first row of cards. Please check the error messages above.")
     
