@@ -496,8 +496,9 @@ def ocr_description_zone_card_info(desc_zone_img: np.ndarray, lang: str = "eng",
         config = r'--oem 3 --psm 7'
         try:
             name1 = pytesseract.image_to_string(name_thresh, lang=lang, config=config).strip()
-            name2 = pytesseract.image_to_string(name_adaptive, lang=lang, config=config).strip()
-            card_name = name1 if len(name1) > len(name2) else name2
+            # name2 = pytesseract.image_to_string(name_adaptive, lang=lang, config=config).strip()
+            # print("Name1: ", name1, "; Name2: ", name2)
+            card_name = name1 # if len(name1) > len(name2) else name2
             card_name = card_name.replace("\n", " ").replace("\x0c", "").strip()
         except Exception:
             card_name = ""
