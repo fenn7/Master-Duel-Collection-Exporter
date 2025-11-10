@@ -1145,24 +1145,38 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1) -> Dict[st
     if row_number == 1:
         # FIRST ROW: Capture and save the ENTIRE card collection area
         collection_area_y = header_y + header_h + 10
-        initial_collection_h = height - collection_area_y - 50  # Extend to bottom of window (with 50px margin for UI)
-        
-        # REFINED: Reduce total height by 4% from BOTTOM only
-        height_reduction = int(initial_collection_h * 0.04)  # 4% height reduction from bottom
-        collection_area_h = initial_collection_h - height_reduction
-        
-        print(f"[click_cards_and_extract_info_single_row] Collection area refined: removed {height_reduction}px from bottom (4% reduction)")
+        collection_area_h = height - collection_area_y - 50  # Extend to bottom of window (with 50px margin for UI)
         
         # Capture the full collection area
         full_collection_img = full_window_img[collection_area_y:collection_area_y + collection_area_h,
                                             card_area_x:card_area_x + card_area_w]
         
-        # Save the complete collection screenshot
+        # NEW: Add complete grid divider lines to full collection image
+        full_collection_with_grid = full_collection_img.copy()
+        
+        # Calculate grid dimensions for the full collection
+        card_width = card_area_w // 6  # Width of each card column
+        card_height = collection_area_h // 5  # Height of each card row (5 rows visible)
+        
+        # Draw 5 VERTICAL lines to separate 6 columns
+        for col in range(1, 6):  # Lines between columns 1-2, 2-3, 3-4, 4-5, 5-6
+            line_x = col * card_width
+            cv2.line(full_collection_with_grid, (line_x, 0), (line_x, collection_area_h), (0, 255, 0), 2)  # Green vertical lines
+            print(f"[grid] Drew vertical line {col} at x={line_x}")
+        
+        # Draw 4 HORIZONTAL lines to separate 5 rows  
+        for row in range(1, 5):  # Lines between rows 1-2, 2-3, 3-4, 4-5
+            line_y = row * card_height
+            cv2.line(full_collection_with_grid, (0, line_y), (card_area_w, line_y), (0, 255, 0), 2)  # Green horizontal lines
+            print(f"[grid] Drew horizontal line {row} at y={line_y}")
+        
+        # Save the complete collection screenshot with grid
         collection_path = Path("test_identifier/full_collection.png")
         collection_path.parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(collection_path), full_collection_img)
-        print(f"[click_cards_and_extract_info_single_row] Saved ENTIRE collection area as {collection_path}")
+        cv2.imwrite(str(collection_path), full_collection_with_grid)
+        print(f"[click_cards_and_extract_info_single_row] Saved ENTIRE collection area with COMPLETE GRID as {collection_path}")
         print(f"[click_cards_and_extract_info_single_row] Full collection dimensions: {card_area_w}x{collection_area_h}")
+        print(f"[click_cards_and_extract_info_single_row] Grid: 6 columns ({card_width}px each) x 5 rows ({card_height}px each)")
     
     # Use fixed positioning for individual row processing - after scroll, next row appears in same position
     card_area_y = header_y + header_h + 10
