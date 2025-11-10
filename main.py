@@ -1134,8 +1134,7 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1) -> Dict[st
     header_h, header_w = gray_header.shape[:2]
     print(f"[click_cards_and_extract_info] Found header at window-relative position: ({header_x}, {header_y}) with confidence {max_val:.3f}")
     
-    # Step 5: SIMPLIFIED - Use same fixed detection area for all rows
-    # After scrolling, the next row should appear in the same relative position
+    # Step 5: Define card collection boundaries - row-specific vs full collection
     
     # Card area horizontal boundaries (consistent for all rows)
     card_area_margin = int(header_w * 0.02)  # 2% margin from header edge to first card
@@ -1143,10 +1142,32 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1) -> Dict[st
     # EXPANDED: Increase width to capture full 6th card (was 90%, now increased to ~93.5% to fix 96.5% issue)
     card_area_w = int(header_w * 0.935)  # Cards use ~93.5% of header width to include full 6th card
     
-    # Use fixed positioning for all rows - after scroll, next row appears in same position
+    if row_number == 1:
+        # FIRST ROW: Capture and save the ENTIRE card collection area
+        collection_area_y = header_y + header_h + 10
+        initial_collection_h = height - collection_area_y - 50  # Extend to bottom of window (with 50px margin for UI)
+        
+        # REFINED: Reduce total height by 4% from BOTTOM only
+        height_reduction = int(initial_collection_h * 0.04)  # 4% height reduction from bottom
+        collection_area_h = initial_collection_h - height_reduction
+        
+        print(f"[click_cards_and_extract_info_single_row] Collection area refined: removed {height_reduction}px from bottom (4% reduction)")
+        
+        # Capture the full collection area
+        full_collection_img = full_window_img[collection_area_y:collection_area_y + collection_area_h,
+                                            card_area_x:card_area_x + card_area_w]
+        
+        # Save the complete collection screenshot
+        collection_path = Path("test_identifier/full_collection.png")
+        collection_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(collection_path), full_collection_img)
+        print(f"[click_cards_and_extract_info_single_row] Saved ENTIRE collection area as {collection_path}")
+        print(f"[click_cards_and_extract_info_single_row] Full collection dimensions: {card_area_w}x{collection_area_h}")
+    
+    # Use fixed positioning for individual row processing - after scroll, next row appears in same position
     card_area_y = header_y + header_h + 10
     
-    # Estimated card dimensions
+    # Estimated card dimensions for individual row
     estimated_card_width = card_area_w // 6
     estimated_card_height = int(estimated_card_width * 1.4)
     card_area_h = estimated_card_height + 20
