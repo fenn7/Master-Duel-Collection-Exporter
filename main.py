@@ -1880,26 +1880,37 @@ def main():
     cleanup_temp_files()
 
 def cleanup_temp_files():
-    """Remove temporary debugging files created during execution."""
-    temp_files = [
+    """Remove ALL temporary debugging files created during execution."""
+    import glob
+    
+    # Find all tmp_rovodev_* files in current directory
+    temp_files = glob.glob("tmp_rovodev_*")
+    
+    # Add specific known temporary files that might not match the pattern
+    additional_temp_files = [
         "tmp_rovodev_full_window.png",
-        "tmp_rovodev_card_area.png"
+        "tmp_rovodev_card_area.png",
+        "tmp_rovodev_name_region_debug.png", 
+        "tmp_rovodev_name_gray_debug.png"
     ]
     
-    # Card and description files are now saved in test_identifier permanently
-    # Only clean up the main debugging files
+    # Combine and deduplicate
+    all_temp_files = list(set(temp_files + additional_temp_files))
     
     removed_count = 0
-    for file_path in temp_files:
+    for file_path in all_temp_files:
         try:
             if Path(file_path).exists():
                 Path(file_path).unlink()
                 removed_count += 1
+                print(f"[cleanup] Removed: {file_path}")
         except Exception as e:
             print(f"[cleanup] Could not remove {file_path}: {e}")
     
     if removed_count > 0:
         print(f"[cleanup] Removed {removed_count} temporary debugging files.")
+    else:
+        print("[cleanup] No temporary files found to remove.")
 
 def main_original():
     print("Master Duel collection scraper - starting")
