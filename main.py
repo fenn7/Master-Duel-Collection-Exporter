@@ -1387,6 +1387,11 @@ def click_cards_and_extract_info_multi_row(win, max_rows: int = 2) -> List[Tuple
         
         # Add results from this row in encounter order
         for card_name, count in row_summary.items():
+            # Skip empty card names
+            if not card_name or card_name.strip() == "":
+                print(f"[multi_row] Skipping empty card name")
+                continue
+                
             # Check if card already encountered
             found_existing = False
             for i, (existing_name, existing_count) in enumerate(cards_in_order):
@@ -1401,6 +1406,8 @@ def click_cards_and_extract_info_multi_row(win, max_rows: int = 2) -> List[Tuple
                 # Add new card in encounter order
                 cards_in_order.append((card_name, count))
                 print(f"[multi_row] New card '{card_name}': {count}")
+        
+        print(f"[multi_row] Row {row_num} completed. Current total unique cards: {len(cards_in_order)}")
         
         # If this is not the last row, scroll down to reveal next row
         if row_num < max_rows:
@@ -1908,8 +1915,8 @@ def find_and_extract_first_row_cards(win) -> bool:
             
             border_x = padding + shrink_x
             border_y = padding + shrink_y
-            border_w = max(int(w * 0.14), w - 2 * shrink_x)  # Minimum 14% of detected width
-            border_h = max(int(h * 0.14), h - 2 * shrink_y)  # Minimum 14% of detected height
+            border_w = max(int(w * 0.125), w - 2 * shrink_x)  # Minimum 12.5% of detected width
+            border_h = max(int(h * 0.125), h - 2 * shrink_y)  # Minimum 12.5% of detected height
             
             # Ensure we don't exceed region bounds
             border_x = max(0, min(border_x, region_w - 1))
@@ -1968,16 +1975,31 @@ def print_card_summary(cards_in_order: List[Tuple[str, int]]):
     
     print(f"\n=== FINAL CARD SUMMARY ===")
     print(f"Found {len(cards_in_order)} unique card(s) in encounter order:")
-    print("-" * 50)
+    print("-" * 60)
     
     total_cards = 0
-    for card_name, count in cards_in_order:
-        print(f"{card_name}: x{count}")
-        total_cards += count
+    displayed_count = 0
     
-    print("-" * 50)
-    print(f"Total unique cards: {len(cards_in_order)}")
+    for i, (card_name, count) in enumerate(cards_in_order):
+        # Debug: Show all entries being processed
+        # print(f"[DEBUG] Entry {i+1}: '{card_name}' x{count}")
+        
+        # Only display non-empty card names
+        if card_name and card_name.strip():
+            displayed_count += 1
+            print(f"{displayed_count}. {card_name}: x{count}")
+            total_cards += count
+        else:
+            print(f"[DEBUG] Skipped empty card name at position {i+1}")
+    
+    print("-" * 60)
+    # print(f"Total unique cards displayed: {displayed_count}")
+    print(f"Total unique cards in list: {len(cards_in_order)}")
     print(f"Total card count: {total_cards}")
+    
+    # Additional debug info
+    if displayed_count != len(cards_in_order):
+        print(f"[DEBUG] Mismatch detected: {len(cards_in_order) - displayed_count} cards have empty names")
 
 def main():
     """
