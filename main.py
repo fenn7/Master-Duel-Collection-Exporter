@@ -426,7 +426,7 @@ def split_grid_to_thumbs(grid_img: np.ndarray, expected_rows=None, expected_cols
 
     return []
 
-def ocr_description_zone_card_info(desc_zone_img: np.ndarray, lang: str = "eng", card_number: int = 0) -> Tuple[str, int]:
+def ocr_description_zone_card_info(desc_zone_img: np.ndarray, lang: str = "eng", card_number: int = 0, row_number: int = 1) -> Tuple[str, int]:
     """
     Extract card name from the top area and count from bottom right of description zone.
     Returns (card_name, count)
@@ -476,8 +476,8 @@ def ocr_description_zone_card_info(desc_zone_img: np.ndarray, lang: str = "eng",
     
     # Save the specific text region being used for OCR for debugging
     if card_number > 0:
-        title_path = Path(f"test_identifier/title_{card_number:02d}.png")
-        title_path.parent.mkdir(exist_ok=True)
+        title_path = Path(f"test_identifier/row{row_number}/title_{card_number:02d}.png")
+        title_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(title_path), name_region)
         print(f"[ocr_description_zone_card_info] Saved title region for card {card_number} as {title_path}")
     
@@ -502,48 +502,88 @@ def ocr_description_zone_card_info(desc_zone_img: np.ndarray, lang: str = "eng",
         except Exception:
             card_name = ""
     
-    # Extract count from bottom right corner
+    # NEW: Extract count using count_header.PNG template matching
     count = 1
-    # REDUCED: Trim count area to 25% of previous size for tighter focus
-    # Previous: 30% of dimension, New: 25% of that = 30% * 0.25 = 7.5%
-    # But we need to reduce the actual area by 25%, so: sqrt(0.25) = 0.5, so 30% * 0.5 = 15%
-    corner_size = min(int(h * 0.15), int(w * 0.15))  # 15% of smaller dimension (reduces area to 25% of original)
-    margin = int(corner_size * 0.1)  # 10% margin
     
-    if corner_size > 20:  # Only try if region is reasonably sized
-        count_region = desc_zone_img[h-corner_size:h-margin, w-corner_size:w-margin]
+    # Load count_header template
+    count_header_path = Path("templates/count_header.PNG")
+    if not count_header_path.exists():
+        print(f"[ocr_description_zone_card_info] Count header template not found at {count_header_path}")
+        return card_name, count
+    
+    count_header_template = cv2.imread(str(count_header_path))
+    if count_header_template is None:
+        print(f"[ocr_description_zone_card_info] Failed to load count header template")
+        return card_name, count
+    
+    # Convert to grayscale for template matching
+    gray_desc_zone = cv2.cvtColor(desc_zone_img, cv2.COLOR_BGR2GRAY)
+    gray_count_header = cv2.cvtColor(count_header_template, cv2.COLOR_BGR2GRAY)
+    
+    # Perform template matching to find count header
+    res = cv2.matchTemplate(gray_desc_zone, gray_count_header, cv2.TM_CCOEFF_NORMED)
+    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+    
+    # Check if match confidence is sufficient
+    confidence_threshold = 0.6  # Threshold for count header detection
+    if max_val >= confidence_threshold:
+        # Get count header position and dimensions
+        header_x, header_y = max_loc
+        header_h, header_w = gray_count_header.shape[:2]
+        print(f"[ocr_description_zone_card_info] Found count header at ({header_x}, {header_y}) with confidence {max_val:.3f}")
         
-        # Save count region for debugging
-        if card_number > 0:
-            count_path = Path(f"test_identifier/count_{card_number:02d}.png")
-            count_path.parent.mkdir(exist_ok=True)
-            cv2.imwrite(str(count_path), count_region)
-            print(f"[ocr_description_zone_card_info] Saved count region for card {card_number} as {count_path}")
+        # Define count region UNDERNEATH the count header
+        count_region_x = header_x
+        count_region_y = header_y + header_h + 2  # Start just below the header
+        initial_count_region_w = header_w + 20  # Slightly wider than header for count text
         
-        if count_region.size > 0:
-            count_gray = cv2.cvtColor(count_region, cv2.COLOR_BGR2GRAY)
-            count_gray = cv2.resize(count_gray, (count_gray.shape[1]*2, count_gray.shape[0]*2), interpolation=cv2.INTER_CUBIC)
+        # REFINED: Remove 43% width from RIGHT SIDE ONLY to focus on count number
+        width_reduction = int(initial_count_region_w * 0.43)  # 43% width reduction from right
+        count_region_w = initial_count_region_w - width_reduction
+        count_region_h = min(30, h - count_region_y)  # Up to 30px high for count text
+        
+        print(f"[ocr_description_zone_card_info] Count region refined: removed {width_reduction}px from right (43% reduction)")
+        
+        # Ensure we don't go outside description zone boundaries
+        if count_region_y + count_region_h <= h and count_region_x + count_region_w <= w:
+            count_region = desc_zone_img[count_region_y:count_region_y + count_region_h,
+                                       count_region_x:count_region_x + count_region_w]
             
-            # Look for numbers using multiple approaches
-            _, count_thresh1 = cv2.threshold(count_gray, 120, 255, cv2.THRESH_BINARY_INV)
-            _, count_thresh2 = cv2.threshold(count_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            # Save count region for debugging
+            if card_number > 0:
+                count_path = Path(f"test_identifier/row{row_number}/count_{card_number:02d}.png")
+                count_path.parent.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(count_path), count_region)
+                print(f"[ocr_description_zone_card_info] Saved count region (under header) for card {card_number} as {count_path}")
             
-            cfg_count = r'--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789x'
-            
-            for thresh_img in [count_thresh1, count_thresh2]:
-                try:
-                    txt = pytesseract.image_to_string(thresh_img, config=cfg_count).strip()
-                    # Look for numbers, handle "x3" format
-                    if 'x' in txt.lower():
-                        num_part = txt.lower().split('x')[-1]
-                        if num_part.isdigit():
-                            count = int(num_part)
+            if count_region.size > 0:
+                count_gray = cv2.cvtColor(count_region, cv2.COLOR_BGR2GRAY)
+                count_gray = cv2.resize(count_gray, (count_gray.shape[1]*3, count_gray.shape[0]*3), interpolation=cv2.INTER_CUBIC)
+                
+                # Look for numbers using multiple approaches
+                _, count_thresh1 = cv2.threshold(count_gray, 120, 255, cv2.THRESH_BINARY_INV)
+                _, count_thresh2 = cv2.threshold(count_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                
+                cfg_count = r'--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789x'
+                
+                for thresh_img in [count_thresh1, count_thresh2]:
+                    try:
+                        txt = pytesseract.image_to_string(thresh_img, config=cfg_count).strip()
+                        # Look for numbers, handle "x3" format
+                        if 'x' in txt.lower():
+                            num_part = txt.lower().split('x')[-1]
+                            if num_part.isdigit():
+                                count = int(num_part)
+                                break
+                        elif txt.isdigit():
+                            count = int(txt)
                             break
-                    elif txt.isdigit():
-                        count = int(txt)
-                        break
-                except Exception:
-                    continue
+                    except Exception:
+                        continue
+        else:
+            print(f"[ocr_description_zone_card_info] Count region would exceed description zone boundaries")
+    else:
+        print(f"[ocr_description_zone_card_info] Count header not found (confidence: {max_val:.3f} < {confidence_threshold})")
     
     print(f"[ocr_description_zone_card_info] Extracted: '{card_name}', count: {count}")
     return card_name, count
@@ -1036,13 +1076,13 @@ def detect_card_borders(card_region_img: np.ndarray) -> Optional[Tuple[int, int,
     print("[detect_card_borders] All detection methods including fallback failed")
     return None
 
-def click_cards_and_extract_info(win) -> Dict[str, int]:
+def click_cards_and_extract_info_single_row(win, row_number: int = 1) -> Dict[str, int]:
     """
-    CHANGE 2: New function that detects 6 cards in first row, clicks each one,
+    CHANGE 2: Process a single row of 6 cards - detects cards, clicks each one,
     captures the description zone, extracts card name and count, and returns summary.
     Returns dictionary with card names as keys and total counts as values.
     """
-    print("[click_cards_and_extract_info] Starting enhanced card detection and clicking process...")
+    print(f"[click_cards_and_extract_info_single_row] Starting row {row_number} card detection and clicking process...")
     
     # Step 1: Get window coordinates and handle negative coords
     left, top, width, height = win.left, win.top, win.width, win.height
@@ -1093,24 +1133,26 @@ def click_cards_and_extract_info(win) -> Dict[str, int]:
     header_h, header_w = gray_header.shape[:2]
     print(f"[click_cards_and_extract_info] Found header at window-relative position: ({header_x}, {header_y}) with confidence {max_val:.3f}")
     
-    # Step 5: Define card collection area below header - FIXED FOR FIRST ROW
-    card_area_x = header_x
+    # Step 5: SIMPLIFIED - Use same fixed detection area for all rows
+    # After scrolling, the next row should appear in the same relative position
+    
+    # Card area horizontal boundaries (consistent for all rows)
+    card_area_margin = int(header_w * 0.02)  # 2% margin from header edge to first card
+    card_area_x = header_x + card_area_margin
+    card_area_w = int(header_w * 0.90)  # Cards use ~90% of header width
+    
+    # Use fixed positioning for all rows - after scroll, next row appears in same position
     card_area_y = header_y + header_h + 10
     
-    # FIXED: Use proper card area width (not the uncropped full window width)
-    # Based on the reference image, cards take up most of the header width
-    card_area_w = min(width - card_area_x, int(header_w * 0.95))  # Use 95% of header width
-    
-    # FIXED: Height should be just enough for one row of cards, not 40% of window
-    # From reference image, one row is approximately 1/6 of a typical card width
+    # Estimated card dimensions
     estimated_card_width = card_area_w // 6
-    card_area_h = int(estimated_card_width * 1.4)  # Card aspect ratio
+    estimated_card_height = int(estimated_card_width * 1.4)
+    card_area_h = estimated_card_height + 20
     
     # Ensure we don't go outside window boundaries
     card_area_h = min(card_area_h, height - card_area_y)
     
-    print(f"[click_cards_and_extract_info] FIXED card area: x={card_area_x}, y={card_area_y}, w={card_area_w}, h={card_area_h}")
-    print(f"[click_cards_and_extract_info] Header dimensions for reference: w={header_template.shape[1]}, h={header_template.shape[0]}")
+    print(f"[click_cards_and_extract_info_single_row] FIXED position for row {row_number}: x={card_area_x}, y={card_area_y}, w={card_area_w}, h={card_area_h}")
     
     if card_area_w <= 0 or card_area_h <= 0:
         print(f"[click_cards_and_extract_info] Card area dimensions invalid: {card_area_w}x{card_area_h}")
@@ -1161,11 +1203,11 @@ def click_cards_and_extract_info(win) -> Dict[str, int]:
             # Extract card image
             card_img = card_area_img[final_y:final_y + final_h, final_x:final_x + final_w].copy()
             
-            # Save individual card for debugging in test_identifier folder
-            card_path = Path(f"test_identifier/card_{i+1:02d}.png")
-            card_path.parent.mkdir(exist_ok=True)
+            # Save individual card for debugging in row-specific folder
+            card_path = Path(f"test_identifier/row{row_number}/card_{i+1:02d}.png")
+            card_path.parent.mkdir(parents=True, exist_ok=True)
             cv2.imwrite(str(card_path), card_img)
-            print(f"[click_cards_and_extract_info] Saved card {i+1} as {card_path}")
+            print(f"[click_cards_and_extract_info_single_row] Saved detected card {i+1} as {card_path}")
             
             # Store card with its bounding box (relative to card area)
             cards_to_process.append((card_img, (final_x, final_y, final_w, final_h)))
@@ -1279,14 +1321,14 @@ def click_cards_and_extract_info(win) -> Dict[str, int]:
             desc_zone_img = detect_and_capture_description_zone(clicked_window_img)
             
             if desc_zone_img is not None:
-                # Save description zone in test_identifier folder as requested
-                desc_path = Path(f"test_identifier/desc_{i+1:02d}.png")
-                desc_path.parent.mkdir(exist_ok=True)
+                # Save description zone in row-specific folder
+                desc_path = Path(f"test_identifier/row{row_number}/desc_{i+1:02d}.png")
+                desc_path.parent.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(desc_path), desc_zone_img)
-                print(f"[click_cards_and_extract_info] Saved description zone {i+1} as {desc_path}")
+                print(f"[click_cards_and_extract_info_single_row] Saved description zone {i+1} as {desc_path}")
                 
                 # Extract card name and count from description zone
-                card_name, count = ocr_description_zone_card_info(desc_zone_img, card_number=i+1)
+                card_name, count = ocr_description_zone_card_info(desc_zone_img, card_number=i+1, row_number=row_number)
                 
                 if card_name:  # Only process if we got a card name
                     # CHANGE 3: Aggregate counts for duplicate card names
@@ -1305,8 +1347,47 @@ def click_cards_and_extract_info(win) -> Dict[str, int]:
             print(f"[click_cards_and_extract_info] Error processing card {i+1}: {e}")
             continue
     
-    print(f"\n[click_cards_and_extract_info] Completed processing {len(cards_to_process)} cards")
+    print(f"\n[click_cards_and_extract_info_single_row] Completed processing {len(cards_to_process)} cards for row {row_number}")
     return card_summary
+
+def click_cards_and_extract_info_multi_row(win, max_rows: int = 2) -> Dict[str, int]:
+    """
+    EXPANDED: Process multiple rows of cards by detecting each row and clicking all cards.
+    Currently processes up to 2 rows as requested.
+    """
+    print(f"[click_cards_and_extract_info_multi_row] Starting multi-row processing for {max_rows} rows...")
+    
+    combined_summary = {}
+    
+    for row_num in range(1, max_rows + 1):
+        print(f"\n{'='*50}")
+        print(f"PROCESSING ROW {row_num}")
+        print(f"{'='*50}")
+        
+        # Process current row
+        row_summary = click_cards_and_extract_info_single_row(win, row_number=row_num)
+        
+        # Combine results from this row with overall summary
+        for card_name, count in row_summary.items():
+            if card_name in combined_summary:
+                combined_summary[card_name] += count
+                print(f"[multi_row] Combined counts for '{card_name}': now {combined_summary[card_name]} total")
+            else:
+                combined_summary[card_name] = count
+                print(f"[multi_row] New card '{card_name}': {count}")
+        
+        # If this is not the last row, scroll down to reveal next row
+        if row_num < max_rows:
+            print(f"[multi_row] Scrolling down to reveal row {row_num + 1}...")
+            
+            # REDUCED: Use smaller, more controlled scroll to avoid overshooting
+            # Single small scroll to shift down to next row
+            pyautogui.scroll(-1)  # Very small scroll down
+            time.sleep(1.5)  # Longer wait for UI to stabilize
+            print(f"[multi_row] Gentle scroll completed, ready for row {row_num + 1}")
+    
+    print(f"\n[click_cards_and_extract_info_multi_row] Completed processing {max_rows} rows")
+    return combined_summary
 
 def find_and_extract_first_row_cards(win) -> bool:
     """
@@ -1888,8 +1969,8 @@ def main():
     
     print("Game window found. Starting card detection and clicking process...")
     
-    # CHANGE 2: Use new function that clicks cards and extracts info
-    card_summary = click_cards_and_extract_info(win)
+    # CHANGE 2: Use new multi-row function that clicks cards and extracts info
+    card_summary = click_cards_and_extract_info_multi_row(win, max_rows=2)
     
     # CHANGE 3: Print final summary with aggregated counts
     print_card_summary(card_summary)
