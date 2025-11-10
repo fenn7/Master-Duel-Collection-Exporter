@@ -464,6 +464,12 @@ def ocr_description_zone_card_info(desc_zone_img: np.ndarray, lang: str = "eng",
     refined_left = left_margin + width_reduction // 2  # Center the width reduction
     refined_right = w - symbol_margin - (width_reduction - width_reduction // 2)  # Distribute remainder
     
+    # ADDITIONAL: Remove further 1.7% width from RIGHT EDGE only
+    additional_right_reduction = int(current_width * 0.017)  # 1.7% of current width
+    refined_right = refined_right - additional_right_reduction
+    
+    print(f"[ocr_description_zone_card_info] Additional right reduction: {additional_right_reduction}px")
+    
     name_region = desc_zone_img[refined_top:refined_bottom, refined_left:refined_right]
     
     print(f"[ocr_description_zone_card_info] Applied refinements: height reduced by {height_reduction}px, width reduced by {width_reduction}px")
@@ -498,11 +504,21 @@ def ocr_description_zone_card_info(desc_zone_img: np.ndarray, lang: str = "eng",
     
     # Extract count from bottom right corner
     count = 1
-    corner_size = min(int(h * 0.3), int(w * 0.3))  # 30% of smaller dimension
+    # REDUCED: Trim count area to 25% of previous size for tighter focus
+    # Previous: 30% of dimension, New: 25% of that = 30% * 0.25 = 7.5%
+    # But we need to reduce the actual area by 25%, so: sqrt(0.25) = 0.5, so 30% * 0.5 = 15%
+    corner_size = min(int(h * 0.15), int(w * 0.15))  # 15% of smaller dimension (reduces area to 25% of original)
     margin = int(corner_size * 0.1)  # 10% margin
     
     if corner_size > 20:  # Only try if region is reasonably sized
         count_region = desc_zone_img[h-corner_size:h-margin, w-corner_size:w-margin]
+        
+        # Save count region for debugging
+        if card_number > 0:
+            count_path = Path(f"test_identifier/count_{card_number:02d}.png")
+            count_path.parent.mkdir(exist_ok=True)
+            cv2.imwrite(str(count_path), count_region)
+            print(f"[ocr_description_zone_card_info] Saved count region for card {card_number} as {count_path}")
         
         if count_region.size > 0:
             count_gray = cv2.cvtColor(count_region, cv2.COLOR_BGR2GRAY)
@@ -1214,11 +1230,20 @@ def click_cards_and_extract_info(win) -> Dict[str, int]:
             print(f"[detect_and_capture_description_zone] Description zone dimensions invalid: {desc_zone_w}x{desc_zone_h}")
             return None
         
-        # Capture the description zone
-        description_zone = window_img[desc_zone_y:desc_zone_y + desc_zone_h,
-                                    desc_zone_x:desc_zone_x + desc_zone_w]
+        # REFINED: Trim description zone - remove 2% height from bottom, 4% width from right
+        height_reduction = int(desc_zone_h * 0.02)  # 2% height reduction from bottom
+        width_reduction = int(desc_zone_w * 0.04)   # 4% width reduction from right
         
-        print(f"[detect_and_capture_description_zone] Successfully captured description zone: {desc_zone_w}x{desc_zone_h} pixels")
+        refined_desc_zone_h = desc_zone_h - height_reduction
+        refined_desc_zone_w = desc_zone_w - width_reduction
+        
+        print(f"[detect_and_capture_description_zone] Trimmed description zone: removed {height_reduction}px from bottom, {width_reduction}px from right")
+        
+        # Capture the refined description zone
+        description_zone = window_img[desc_zone_y:desc_zone_y + refined_desc_zone_h,
+                                    desc_zone_x:desc_zone_x + refined_desc_zone_w]
+        
+        print(f"[detect_and_capture_description_zone] Successfully captured refined description zone: {refined_desc_zone_w}x{refined_desc_zone_h} pixels (original: {desc_zone_w}x{desc_zone_h})")
         return description_zone
     
     # Step 8: Process each card by clicking and extracting info
