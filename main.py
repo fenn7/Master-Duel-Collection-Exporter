@@ -1139,7 +1139,8 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1) -> Dict[st
     # Card area horizontal boundaries (consistent for all rows)
     card_area_margin = int(header_w * 0.02)  # 2% margin from header edge to first card
     card_area_x = header_x + card_area_margin
-    card_area_w = int(header_w * 0.90)  # Cards use ~90% of header width
+    # EXPANDED: Increase width to capture full 6th card (was 90%, now increased to ~93.5% to fix 96.5% issue)
+    card_area_w = int(header_w * 0.935)  # Cards use ~93.5% of header width to include full 6th card
     
     # Use fixed positioning for all rows - after scroll, next row appears in same position
     card_area_y = header_y + header_h + 10
@@ -1169,6 +1170,21 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1) -> Dict[st
     card_area_img = full_window_img[card_area_y:card_area_y + card_area_h, card_area_x:card_area_x + card_area_w]
     cv2.imwrite("tmp_rovodev_card_area.png", card_area_img)
     print(f"[click_cards_and_extract_info] Saved card area as tmp_rovodev_card_area.png")
+    
+    # NEW: Save row_full screenshot with card boundaries like first_row_full.png
+    row_full_img = card_area_img.copy()
+    
+    # Draw card boundary lines on the row_full image for visualization
+    card_width = card_area_w // 6
+    for i in range(1, 6):  # Draw 5 vertical lines to separate 6 cards
+        line_x = i * card_width
+        cv2.line(row_full_img, (line_x, 0), (line_x, card_area_h), (0, 255, 0), 2)  # Green lines
+    
+    # Save the row_full screenshot with boundaries
+    row_full_path = Path(f"test_identifier/row{row_number}/{row_number}_row_full.png")
+    row_full_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(row_full_path), row_full_img)
+    print(f"[click_cards_and_extract_info_single_row] Saved row {row_number} full screenshot with boundaries as {row_full_path}")
     
     # IMPROVED: Use fixed grid approach based on reference image
     # From first_row_full.png, we can see 6 cards in a horizontal row
@@ -1350,14 +1366,16 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1) -> Dict[st
     print(f"\n[click_cards_and_extract_info_single_row] Completed processing {len(cards_to_process)} cards for row {row_number}")
     return card_summary
 
-def click_cards_and_extract_info_multi_row(win, max_rows: int = 2) -> Dict[str, int]:
+def click_cards_and_extract_info_multi_row(win, max_rows: int = 2) -> List[Tuple[str, int]]:
     """
     EXPANDED: Process multiple rows of cards by detecting each row and clicking all cards.
     Currently processes up to 2 rows as requested.
+    Returns list of tuples (card_name, count) in encounter order.
     """
     print(f"[click_cards_and_extract_info_multi_row] Starting multi-row processing for {max_rows} rows...")
     
-    combined_summary = {}
+    # Use ordered list to maintain encounter order instead of dictionary
+    cards_in_order = []
     
     for row_num in range(1, max_rows + 1):
         print(f"\n{'='*50}")
@@ -1367,13 +1385,21 @@ def click_cards_and_extract_info_multi_row(win, max_rows: int = 2) -> Dict[str, 
         # Process current row
         row_summary = click_cards_and_extract_info_single_row(win, row_number=row_num)
         
-        # Combine results from this row with overall summary
+        # Add results from this row in encounter order
         for card_name, count in row_summary.items():
-            if card_name in combined_summary:
-                combined_summary[card_name] += count
-                print(f"[multi_row] Combined counts for '{card_name}': now {combined_summary[card_name]} total")
-            else:
-                combined_summary[card_name] = count
+            # Check if card already encountered
+            found_existing = False
+            for i, (existing_name, existing_count) in enumerate(cards_in_order):
+                if existing_name == card_name:
+                    # Update existing entry
+                    cards_in_order[i] = (existing_name, existing_count + count)
+                    print(f"[multi_row] Combined counts for '{card_name}': now {existing_count + count} total")
+                    found_existing = True
+                    break
+            
+            if not found_existing:
+                # Add new card in encounter order
+                cards_in_order.append((card_name, count))
                 print(f"[multi_row] New card '{card_name}': {count}")
         
         # If this is not the last row, scroll down to reveal next row
@@ -1387,7 +1413,7 @@ def click_cards_and_extract_info_multi_row(win, max_rows: int = 2) -> Dict[str, 
             print(f"[multi_row] Gentle scroll completed, ready for row {row_num + 1}")
     
     print(f"\n[click_cards_and_extract_info_multi_row] Completed processing {max_rows} rows")
-    return combined_summary
+    return cards_in_order
 
 def find_and_extract_first_row_cards(win) -> bool:
     """
@@ -1882,8 +1908,8 @@ def find_and_extract_first_row_cards(win) -> bool:
             
             border_x = padding + shrink_x
             border_y = padding + shrink_y
-            border_w = max(int(w * 0.15), w - 2 * shrink_x)  # Minimum 15% of detected width
-            border_h = max(int(h * 0.15), h - 2 * shrink_y)  # Minimum 15% of detected height
+            border_w = max(int(w * 0.14), w - 2 * shrink_x)  # Minimum 14% of detected width
+            border_h = max(int(h * 0.14), h - 2 * shrink_y)  # Minimum 14% of detected height
             
             # Ensure we don't exceed region bounds
             border_x = max(0, min(border_x, region_w - 1))
@@ -1930,27 +1956,27 @@ def find_and_extract_first_row_cards(win) -> bool:
 
 # ---------- Entrypoint ----------
 
-def print_card_summary(card_summary: Dict[str, int]):
+def print_card_summary(cards_in_order: List[Tuple[str, int]]):
     """
     CHANGE 3: Print final summary of all cards and counts.
-    Handles duplicate card name aggregation as specified.
+    Handles duplicate card name aggregation and maintains encounter order.
     """
-    if not card_summary:
+    if not cards_in_order:
         print("\n=== FINAL CARD SUMMARY ===")
         print("No cards were successfully processed.")
         return
     
     print(f"\n=== FINAL CARD SUMMARY ===")
-    print(f"Found {len(card_summary)} unique card(s):")
+    print(f"Found {len(cards_in_order)} unique card(s) in encounter order:")
     print("-" * 50)
     
     total_cards = 0
-    for card_name, count in sorted(card_summary.items()):
+    for card_name, count in cards_in_order:
         print(f"{card_name}: x{count}")
         total_cards += count
     
     print("-" * 50)
-    print(f"Total unique cards: {len(card_summary)}")
+    print(f"Total unique cards: {len(cards_in_order)}")
     print(f"Total card count: {total_cards}")
 
 def main():
