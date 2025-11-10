@@ -1367,13 +1367,17 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1) -> Dict[st
     print(f"\n[click_cards_and_extract_info_single_row] Completed processing {len(cards_to_process)} cards for row {row_number}")
     return card_summary
 
-def click_cards_and_extract_info_multi_row(win, max_rows: int = 2) -> List[Tuple[str, int]]:
+def click_cards_and_extract_info_multi_row(win, max_rows: int = 8) -> List[Tuple[str, int]]:
     """
-    EXPANDED: Process multiple rows of cards by detecting each row and clicking all cards.
-    Currently processes up to 2 rows as requested.
+    EXPANDED: Process one full loop of 8 rows with specific scrolling pattern.
+    Scrolling pattern between rows: [1, 2, 1, 2, 1, 1, 2] scrolls for transitions 1→2, 2→3, 3→4, 4→5, 5→6, 6→7, 7→8
     Returns list of tuples (card_name, count) in encounter order.
     """
-    print(f"[click_cards_and_extract_info_multi_row] Starting multi-row processing for {max_rows} rows...")
+    print(f"[click_cards_and_extract_info_multi_row] Starting FULL LOOP processing for {max_rows} rows...")
+    
+    # SPECIFIC SCROLLING PATTERN (non-negotiable as specified)
+    scroll_pattern = [1, 2, 1, 2, 1, 1, 2]  # Scroll counts for transitions between rows
+    print(f"[multi_row] Using scroll pattern: {scroll_pattern}")
     
     # Use ordered list to maintain encounter order instead of dictionary
     cards_in_order = []
@@ -1412,13 +1416,19 @@ def click_cards_and_extract_info_multi_row(win, max_rows: int = 2) -> List[Tuple
         
         # If this is not the last row, scroll down to reveal next row
         if row_num < max_rows:
-            print(f"[multi_row] Scrolling down to reveal row {row_num + 1}...")
+            # Get scroll count for this transition (row_num-1 because array is 0-indexed)
+            scroll_count = scroll_pattern[row_num - 1]
+            print(f"[multi_row] Scrolling from row {row_num} to row {row_num + 1}: {scroll_count} scroll(s)")
             
-            # REDUCED: Use smaller, more controlled scroll to avoid overshooting
-            # Single small scroll to shift down to next row
-            pyautogui.scroll(-1)  # Very small scroll down
-            time.sleep(1.5)  # Longer wait for UI to stabilize
-            print(f"[multi_row] Gentle scroll completed, ready for row {row_num + 1}")
+            # Apply the specified number of scrolls for this transition
+            for scroll_step in range(scroll_count):
+                pyautogui.scroll(-1)  # Single scroll down
+                time.sleep(0.3)  # Short pause between scrolls
+                print(f"[multi_row] Scroll {scroll_step + 1}/{scroll_count} completed")
+            
+            # Wait for UI to stabilize after all scrolls
+            time.sleep(1.5)
+            print(f"[multi_row] All {scroll_count} scroll(s) completed, ready for row {row_num + 1}")
     
     print(f"\n[click_cards_and_extract_info_multi_row] Completed processing {max_rows} rows")
     return cards_in_order
@@ -2018,8 +2028,8 @@ def main():
     
     print("Game window found. Starting card detection and clicking process...")
     
-    # CHANGE 2: Use new multi-row function that clicks cards and extracts info
-    card_summary = click_cards_and_extract_info_multi_row(win, max_rows=2)
+    # CHANGE 2: Use new multi-row function that clicks cards and extracts info for FULL LOOP
+    card_summary = click_cards_and_extract_info_multi_row(win, max_rows=8)
     
     # CHANGE 3: Print final summary with aggregated counts
     print_card_summary(card_summary)
