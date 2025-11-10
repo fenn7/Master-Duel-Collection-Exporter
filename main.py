@@ -446,7 +446,12 @@ def ocr_name_and_count(thumb_img: np.ndarray, lang: str = "eng") -> Tuple[str, i
 
     # Count badge at bottom-right corner
     count = 1
-    cr = thumb_img[max(0, h-34):h-6, max(0, w-34):w-6].copy()
+    # Use proportional corner region for OCR
+    corner_h = int(h * 0.4)  # 40% of thumbnail height
+    corner_w = int(w * 0.4)  # 40% of thumbnail width
+    margin_h = int(h * 0.07)  # 7% margin from bottom
+    margin_w = int(w * 0.07)  # 7% margin from right
+    cr = thumb_img[max(0, h-corner_h):h-margin_h, max(0, w-corner_w):w-margin_w].copy()
     cr_gray = cv2.cvtColor(cr, cv2.COLOR_BGR2GRAY)
     cr_gray = cv2.resize(cr_gray, (cr_gray.shape[1]*2, cr_gray.shape[0]*2), interpolation=cv2.INTER_CUBIC)
     _, th = cv2.threshold(cr_gray, 120, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
@@ -958,7 +963,7 @@ def find_and_extract_first_row_cards(win) -> bool:
     res = cv2.matchTemplate(gray_window, gray_header, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, max_loc = cv2.minMaxLoc(res)
     
-    if max_val < 0.65:
+    if max_val < 0.5:  # Lowered for better detection with proportional changes
         print(f"[find_and_extract_first_row_cards] Header template match confidence too low: {max_val:.3f} (threshold: 0.65)")
         return False
     
@@ -966,9 +971,90 @@ def find_and_extract_first_row_cards(win) -> bool:
     _, header_h = gray_header.shape[1], gray_header.shape[0]
     print(f"[find_and_extract_first_row_cards] Found header at window-relative position: ({header_x}, {header_y}) with confidence {max_val:.3f}")
     
+    # Define description zone detection function first
+    def detect_and_capture_description_zone(window_img: np.ndarray) -> bool:
+        """
+        Detect the card_header.PNG template on screen and capture the description area below it.
+        This area shows card titles and information when a card is clicked.
+        Returns True if successfully captured, False otherwise.
+        """
+        # Load card_header template
+        card_header_path = Path("templates/card_header.PNG")
+        if not card_header_path.exists():
+            print(f"[detect_and_capture_description_zone] Card header template not found at {card_header_path}")
+            return False
+        
+        card_header_template = cv2.imread(str(card_header_path))
+        if card_header_template is None:
+            print(f"[detect_and_capture_description_zone] Failed to load card header template")
+            return False
+        
+        print(f"[detect_and_capture_description_zone] Loaded card header template: {card_header_template.shape}")
+        
+        # Convert to grayscale for template matching
+        gray_window = cv2.cvtColor(window_img, cv2.COLOR_BGR2GRAY)
+        gray_card_header = cv2.cvtColor(card_header_template, cv2.COLOR_BGR2GRAY)
+        
+        # Perform template matching
+        res = cv2.matchTemplate(gray_window, gray_card_header, cv2.TM_CCOEFF_NORMED)
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+        
+        # Check if match confidence is sufficient
+        confidence_threshold = 0.5  # Lowered for better detection with proportional changes
+        if max_val < confidence_threshold:
+            print(f"[detect_and_capture_description_zone] Card header template match confidence too low: {max_val:.3f} (threshold: {confidence_threshold})")
+            return False
+        
+        # Get header position and dimensions
+        header_x, header_y = max_loc
+        header_h, header_w = gray_card_header.shape[:2]
+        print(f"[detect_and_capture_description_zone] Found card header at position: ({header_x}, {header_y}) with confidence {max_val:.3f}")
+        
+        # Define description zone area below the header
+        # Only capture the leftmost card description box, not the deck area
+        desc_zone_x = header_x
+        desc_zone_y = header_y + header_h + 5  # Small gap after header
+        # Use proportional dimensions based on window size
+        window_h, window_w = window_img.shape[:2]
+        desc_zone_w = min(int(window_w * 0.22), header_w * 3)  # ~22% of window width for card info box
+        desc_zone_h = int(window_h * 0.16)  # ~16% of window height for description area
+        
+        # Ensure we don't go outside window boundaries
+        window_h, window_w = window_img.shape[:2]
+        desc_zone_w = min(desc_zone_w, window_w - desc_zone_x)
+        desc_zone_h = min(desc_zone_h, window_h - desc_zone_y)
+        
+        if desc_zone_w <= 0 or desc_zone_h <= 0:
+            print(f"[detect_and_capture_description_zone] Description zone dimensions invalid: {desc_zone_w}x{desc_zone_h}")
+            return False
+        
+        # Extract description zone
+        description_zone = window_img[desc_zone_y:desc_zone_y + desc_zone_h, 
+                                    desc_zone_x:desc_zone_x + desc_zone_w].copy()
+        
+        # Save description zone image
+        output_path = Path("test_identifier/description_zone.png")
+        output_path.parent.mkdir(exist_ok=True)
+        
+        success = cv2.imwrite(str(output_path), description_zone)
+        if success:
+            print(f"[detect_and_capture_description_zone] Successfully saved description zone: {desc_zone_w}x{desc_zone_h} pixels to {output_path}")
+            return True
+        else:
+            print(f"[detect_and_capture_description_zone] Failed to save description zone image")
+            return False
+    
+    # Step 4.5: Detect and capture description zone (card info area)
+    description_captured = detect_and_capture_description_zone(full_window_img)
+    if description_captured:
+        print(f"[find_and_extract_first_row_cards] Description zone captured successfully")
+    else:
+        print(f"[find_and_extract_first_row_cards] Warning: Could not capture description zone")
+    
     # Step 5: Define card collection area below header
     # Collection area starts slightly below the header template
-    collection_start_y = header_y + header_h + 10  # 10 pixels gap after header
+    window_h, window_w = full_window_img.shape[:2]
+    collection_start_y = header_y + header_h + int(window_h * 0.01)  # 1% of window height gap after header
     collection_end_y = height  # Go to bottom of window
     collection_start_x = header_x  # Start at header's left edge
     collection_end_x = width  # Go to right edge of window
@@ -999,16 +1085,16 @@ def find_and_extract_first_row_cards(win) -> bool:
         col_brightness = gray.mean(axis=0)
         
         # Calculate baseline brightness from left portion (card collection area)
-        baseline_sample_width = min(100, w // 4)
+        baseline_sample_width = min(int(w * 0.2), w // 4)  # 20% of width or 1/4, whichever is smaller
         baseline_brightness = col_brightness[:baseline_sample_width].mean()
         
         print(f"[detect_collection_right_edge] Baseline brightness: {baseline_brightness:.1f}")
         
         # Look for significant brightness drop (dark slider area)
         darkness_threshold = baseline_brightness * 0.65  # Slider is much darker
-        scan_width = min(200, w // 3)
+        scan_width = min(int(w * 0.4), w // 3)  # 40% of width or 1/3, whichever is smaller
         
-        for x in range(w - 10, max(0, w - scan_width), -1):
+        for x in range(w - int(w * 0.02), max(0, w - scan_width), -1):  # Start 2% from right edge
             if col_brightness[x] < darkness_threshold:
                 # Found dark area - this is likely the slider
                 # Move boundary left by a percentage of width to exclude ALL gray slider background
@@ -1050,17 +1136,17 @@ def find_and_extract_first_row_cards(win) -> bool:
         col_brightness = gray.mean(axis=0)
         
         # Look for baseline collection brightness from further right
-        baseline_start = min(60, w // 4)
-        baseline_end = min(120, w // 3)
+        baseline_start = min(int(w * 0.12), w // 4)  # 12% of width or 1/4, whichever is smaller
+        baseline_end = min(int(w * 0.25), w // 3)  # 25% of width or 1/3, whichever is smaller
         if baseline_end > baseline_start and baseline_end < w:
             baseline_brightness = col_brightness[baseline_start:baseline_end].mean()
         else:
-            baseline_brightness = col_brightness[min(30, w//2):].mean()
+            baseline_brightness = col_brightness[min(int(w * 0.06), w//2):].mean()  # 6% of width or half, whichever is smaller
         
         print(f"[detect_collection_left_edge] Baseline brightness: {baseline_brightness:.1f}")
         
-        # Look for thin border (typically 1-10 pixels wide)
-        max_border_width = min(15, w // 8)
+        # Look for thin border (proportional to screen width)
+        max_border_width = min(int(w * 0.03), w // 8)  # 3% of width or 1/8, whichever is smaller
         brightness_threshold = baseline_brightness * 0.9  # 90% of collection brightness
         
         # Find first position where brightness consistently matches collection area
@@ -1069,7 +1155,7 @@ def find_and_extract_first_row_cards(win) -> bool:
                 break
             
             # Check current position and a few pixels ahead for consistency
-            check_width = min(5, w - x)
+            check_width = min(int(w * 0.01), w - x)  # 1% of width for consistency check
             if check_width > 0:
                 avg_brightness = col_brightness[x:x+check_width].mean()
                 
@@ -1077,7 +1163,7 @@ def find_and_extract_first_row_cards(win) -> bool:
                 if avg_brightness >= brightness_threshold:
                     # Verify consistency - check that it doesn't drop significantly in next few pixels
                     consistent = True
-                    extended_check = min(10, w - x)
+                    extended_check = min(int(w * 0.02), w - x)  # 2% of width for extended check
                     if extended_check > check_width:
                         extended_brightness = col_brightness[x:x+extended_check].mean()
                         if extended_brightness < brightness_threshold * 0.85:
@@ -1088,7 +1174,7 @@ def find_and_extract_first_row_cards(win) -> bool:
                         return x
         
         # Fallback: skip a small border width
-        fallback_edge = min(3, w // 30)
+        fallback_edge = min(int(w * 0.006), w // 30)  # 0.6% of width or 1/30, whichever is smaller
         print(f"[detect_collection_left_edge] Using fallback left edge at x={fallback_edge}")
         return fallback_edge
     
@@ -1154,8 +1240,14 @@ def find_and_extract_first_row_cards(win) -> bool:
         # Take only the first row (cards with similar y-coordinates)
         if len(kept_boxes) > 0:
             first_row_y = kept_boxes[0][1]
-            # Allow some tolerance for y-coordinate (cards may not be perfectly aligned)
-            y_tolerance = 30
+            
+            # Create a region for the first row based on the detected cards
+            first_row_h = max(b[3] for b in kept_boxes)  # maximum height of any card
+            first_row_img = collection_region_img[0:first_row_y + first_row_h, :]
+            
+            # Now we can calculate the tolerance based on the first row height
+            y_tolerance = int(first_row_img.shape[0] * 0.26)  # 26% of row height tolerance
+            
             first_row_boxes = [b for b in kept_boxes if abs(b[1] - first_row_y) <= y_tolerance]
             # Sort by x-coordinate to get left-to-right order
             first_row_boxes = sorted(first_row_boxes, key=lambda b: b[0])
@@ -1214,7 +1306,7 @@ def find_and_extract_first_row_cards(win) -> bool:
         max_y = max(box[1] + box[3] for box in card_boxes)  # y + height
         
         # Add some padding around the row for context, but respect the left edge
-        row_padding = 15
+        row_padding = int(collection_right_edge * 0.035)  # 3.5% of collection width for padding
         row_x = max(collection_left_edge, min_x - row_padding)
         row_y = 0  # Start from top of collection region to capture full height
         
@@ -1288,7 +1380,7 @@ def find_and_extract_first_row_cards(win) -> bool:
     for idx, (x, y, w, h, _) in enumerate(card_boxes, 1):
         # Extract a region slightly larger than the detected card to ensure we have context for border detection
         # Add padding to ensure we capture the full card even if detection was slightly off
-        padding = 10
+        padding = int(collection_region_img.shape[1] * 0.02)  # 2% of collection width for padding
         region_x = max(0, x - padding)
         region_y = max(0, y - padding)
         region_w = min(w_collection - region_x, w + 2 * padding)
@@ -1312,8 +1404,8 @@ def find_and_extract_first_row_cards(win) -> bool:
             
             border_x = padding + shrink_x
             border_y = padding + shrink_y
-            border_w = max(10, w - 2 * shrink_x)
-            border_h = max(10, h - 2 * shrink_y)
+            border_w = max(int(w * 0.15), w - 2 * shrink_x)  # Minimum 15% of detected width
+            border_h = max(int(h * 0.15), h - 2 * shrink_y)  # Minimum 15% of detected height
             
             # Ensure we don't exceed region bounds
             border_x = max(0, min(border_x, region_w - 1))
@@ -1331,9 +1423,10 @@ def find_and_extract_first_row_cards(win) -> bool:
         # Extract only the card area (within its borders)
         card_img = card_region[border_y:border_y+border_h, border_x:border_x+border_w].copy()
         
-        # Resize card to standard 70x100 pixels
-        target_width = 70
-        target_height = 100
+        # Resize card to proportional dimensions based on window size
+        # Use smaller proportions to keep cards reasonably sized
+        target_width = max(70, int(full_window_img.shape[1] * 0.045))  # ~4.5% of window width, min 70px
+        target_height = max(100, int(full_window_img.shape[0] * 0.11))  # ~11% of window height, min 100px
         card_img = cv2.resize(card_img, (target_width, target_height), interpolation=cv2.INTER_AREA)
         
         # Calculate screen coordinates for the final card image (before resize)
@@ -1694,7 +1787,7 @@ def run_capture_loop(grid_region: Tuple[int,int,int,int],
                     new_found += 1
 
             # Top-slice similarity to detect repeated content after scroll
-            top_row_h = min(120, crop.shape[0] // 6)
+            top_row_h = min(int(crop.shape[0] * 0.13), crop.shape[0] // 6)  # 13% of crop height or 1/6, whichever is smaller
             top_slice = crop[0:top_row_h, :, :].copy()
 
             if prev_top_snapshot is not None and images_similar(prev_top_snapshot, top_slice):
