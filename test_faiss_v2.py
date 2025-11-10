@@ -306,14 +306,25 @@ def test_batch(matcher, images_dir):
         elapsed = time.time() - start
         total_time += elapsed
         
+        # Extract card name from filename
+        card_name = ""
+        if result['filename']:
+            # Format is usually "12345678_Card Name.jpg"
+            parts = result['filename'].split('_', 1)
+            if len(parts) > 1:
+                card_name = parts[1].rsplit('.', 1)[0]  # Remove extension
+            else:
+                card_name = result['filename'].rsplit('.', 1)[0]
+        
         results.append({
             "filename": img_path.name,
             "card_id": result['card_id'],
+            "card_name": card_name,
             "confidence": result['confidence'],
             "time_ms": elapsed * 1000
         })
         
-        print(f"{img_path.name:30s} -> {result['card_id']:12s} ({result['confidence']:.3f}) [{elapsed*1000:.1f}ms]")
+        print(f"{img_path.name:20s} -> {result['card_id']:12s} {card_name[:30]:30s} ({result['confidence']:.3f}) [{elapsed*1000:.1f}ms]")
     
     avg_time = (total_time / len(results)) * 1000
     print("\n" + "=" * 60)

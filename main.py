@@ -426,6 +426,112 @@ def split_grid_to_thumbs(grid_img: np.ndarray, expected_rows=None, expected_cols
 
     return []
 
+def ocr_description_zone_card_info(desc_zone_img: np.ndarray, lang: str = "eng", card_number: int = 0) -> Tuple[str, int]:
+    """
+    Extract card name from the top area and count from bottom right of description zone.
+    Returns (card_name, count)
+    """
+    if desc_zone_img is None or desc_zone_img.size == 0:
+        return "", 1
+    
+    h, w = desc_zone_img.shape[:2]
+    
+    # Extract card name from top area, EXCLUDING the attribute symbol on the right
+    name_h = int(h * 0.25)  # Top 25% for card name
+    
+    # FIXED: Exclude attribute symbol circle on right side
+    # The attribute symbol appears to be in a circle at the right end of the name box
+    # Exclude roughly 15% from the right side to avoid the symbol
+    symbol_margin = int(w * 0.15)  # 15% margin from right for attribute symbol
+    left_margin = int(w * 0.02)    # 2% margin from left
+    top_margin = int(name_h * 0.1)  # 10% margin from top
+    
+    # REFINED: Further reduce capture area to focus only on text box
+    # Reduce height by 30% and width by 1.7% of current height to exclude external symbols
+    # CENTER the reductions around the middle of the title image for best accuracy
+    current_height = name_h - 2 - top_margin
+    current_width = w - symbol_margin - left_margin
+    
+    # Apply reductions - centered around middle
+    height_reduction = int(current_height * 0.3)  # 30% height reduction
+    width_reduction = int(current_height * 0.017)  # 1.7% of height as width reduction
+    
+    # Center the height reduction (remove from both top and bottom)
+    refined_top = top_margin + height_reduction // 2  # Center the height reduction
+    refined_bottom = name_h - 2 - (height_reduction - height_reduction // 2)  # Distribute remainder
+    
+    # Center the width reduction (remove from both left and right)
+    refined_left = left_margin + width_reduction // 2  # Center the width reduction
+    refined_right = w - symbol_margin - (width_reduction - width_reduction // 2)  # Distribute remainder
+    
+    name_region = desc_zone_img[refined_top:refined_bottom, refined_left:refined_right]
+    
+    print(f"[ocr_description_zone_card_info] Applied refinements: height reduced by {height_reduction}px, width reduced by {width_reduction}px")
+    
+    # Save the specific text region being used for OCR for debugging
+    if card_number > 0:
+        title_path = Path(f"test_identifier/title_{card_number:02d}.png")
+        title_path.parent.mkdir(exist_ok=True)
+        cv2.imwrite(str(title_path), name_region)
+        print(f"[ocr_description_zone_card_info] Saved title region for card {card_number} as {title_path}")
+    
+    print(f"[ocr_description_zone_card_info] Name region: {name_region.shape} (excluding {symbol_margin}px from right for attribute symbol)")
+    
+    if name_region.size == 0:
+        card_name = ""
+    else:
+        name_gray = cv2.cvtColor(name_region, cv2.COLOR_BGR2GRAY)
+        name_gray = cv2.resize(name_gray, (name_gray.shape[1]*3, name_gray.shape[0]*3), interpolation=cv2.INTER_CUBIC)
+        # Use multiple preprocessing approaches for better OCR
+        _, name_thresh = cv2.threshold(name_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        name_adaptive = cv2.adaptiveThreshold(name_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+        
+        # Try both preprocessing approaches and pick the one with more text
+        config = r'--oem 3 --psm 7'
+        try:
+            name1 = pytesseract.image_to_string(name_thresh, lang=lang, config=config).strip()
+            name2 = pytesseract.image_to_string(name_adaptive, lang=lang, config=config).strip()
+            card_name = name1 if len(name1) > len(name2) else name2
+            card_name = card_name.replace("\n", " ").replace("\x0c", "").strip()
+        except Exception:
+            card_name = ""
+    
+    # Extract count from bottom right corner
+    count = 1
+    corner_size = min(int(h * 0.3), int(w * 0.3))  # 30% of smaller dimension
+    margin = int(corner_size * 0.1)  # 10% margin
+    
+    if corner_size > 20:  # Only try if region is reasonably sized
+        count_region = desc_zone_img[h-corner_size:h-margin, w-corner_size:w-margin]
+        
+        if count_region.size > 0:
+            count_gray = cv2.cvtColor(count_region, cv2.COLOR_BGR2GRAY)
+            count_gray = cv2.resize(count_gray, (count_gray.shape[1]*2, count_gray.shape[0]*2), interpolation=cv2.INTER_CUBIC)
+            
+            # Look for numbers using multiple approaches
+            _, count_thresh1 = cv2.threshold(count_gray, 120, 255, cv2.THRESH_BINARY_INV)
+            _, count_thresh2 = cv2.threshold(count_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            
+            cfg_count = r'--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789x'
+            
+            for thresh_img in [count_thresh1, count_thresh2]:
+                try:
+                    txt = pytesseract.image_to_string(thresh_img, config=cfg_count).strip()
+                    # Look for numbers, handle "x3" format
+                    if 'x' in txt.lower():
+                        num_part = txt.lower().split('x')[-1]
+                        if num_part.isdigit():
+                            count = int(num_part)
+                            break
+                    elif txt.isdigit():
+                        count = int(txt)
+                        break
+                except Exception:
+                    continue
+    
+    print(f"[ocr_description_zone_card_info] Extracted: '{card_name}', count: {count}")
+    return card_name, count
+
 def ocr_name_and_count(thumb_img: np.ndarray, lang: str = "eng") -> Tuple[str, int, float]:
     """
     Run OCR on a thumbnail to extract the card name and the count badge.
@@ -914,6 +1020,269 @@ def detect_card_borders(card_region_img: np.ndarray) -> Optional[Tuple[int, int,
     print("[detect_card_borders] All detection methods including fallback failed")
     return None
 
+def click_cards_and_extract_info(win) -> Dict[str, int]:
+    """
+    CHANGE 2: New function that detects 6 cards in first row, clicks each one,
+    captures the description zone, extracts card name and count, and returns summary.
+    Returns dictionary with card names as keys and total counts as values.
+    """
+    print("[click_cards_and_extract_info] Starting enhanced card detection and clicking process...")
+    
+    # Step 1: Get window coordinates and handle negative coords
+    left, top, width, height = win.left, win.top, win.width, win.height
+    
+    if left < 0 or top < 0:
+        print(f"[click_cards_and_extract_info] Window at negative coords ({left},{top}). Attempting to move window to primary monitor (8,8).")
+        try:
+            win.moveTo(8, 8)
+            time.sleep(0.35)
+            left, top, width, height = win.left, win.top, win.width, win.height
+            print(f"[click_cards_and_extract_info] Window moved to {left},{top} (size {width}x{height})")
+        except Exception as e:
+            print(f"[click_cards_and_extract_info] Could not move window: {e}. Proceeding with original coords.")
+    
+    # Step 2: Grab full window screenshot
+    try:
+        full_window_img = grab_region((left, top, width, height))
+        print(f"[click_cards_and_extract_info] Captured window screenshot: {full_window_img.shape}")
+    except Exception as e:
+        print(f"[click_cards_and_extract_info] Failed to grab window region: {e}")
+        return {}
+    
+    # Step 3: Load header template
+    header_template_path = Path("templates/header.PNG")
+    if not header_template_path.exists():
+        print(f"[click_cards_and_extract_info] Header template not found at {header_template_path}")
+        return {}
+    
+    header_template = cv2.imread(str(header_template_path))
+    if header_template is None:
+        print(f"[click_cards_and_extract_info] Failed to load header template from {header_template_path}")
+        return {}
+    
+    print(f"[click_cards_and_extract_info] Loaded header template: {header_template.shape}")
+    
+    # Step 4: Find header in window using template matching
+    gray_window = cv2.cvtColor(full_window_img, cv2.COLOR_BGR2GRAY)
+    gray_header = cv2.cvtColor(header_template, cv2.COLOR_BGR2GRAY)
+    
+    res = cv2.matchTemplate(gray_window, gray_header, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+    
+    if max_val < 0.5:
+        print(f"[click_cards_and_extract_info] Header template match confidence too low: {max_val:.3f} (threshold: 0.5)")
+        return {}
+    
+    header_x, header_y = max_loc
+    header_h, header_w = gray_header.shape[:2]
+    print(f"[click_cards_and_extract_info] Found header at window-relative position: ({header_x}, {header_y}) with confidence {max_val:.3f}")
+    
+    # Step 5: Define card collection area below header - FIXED FOR FIRST ROW
+    card_area_x = header_x
+    card_area_y = header_y + header_h + 10
+    
+    # FIXED: Use proper card area width (not the uncropped full window width)
+    # Based on the reference image, cards take up most of the header width
+    card_area_w = min(width - card_area_x, int(header_w * 0.95))  # Use 95% of header width
+    
+    # FIXED: Height should be just enough for one row of cards, not 40% of window
+    # From reference image, one row is approximately 1/6 of a typical card width
+    estimated_card_width = card_area_w // 6
+    card_area_h = int(estimated_card_width * 1.4)  # Card aspect ratio
+    
+    # Ensure we don't go outside window boundaries
+    card_area_h = min(card_area_h, height - card_area_y)
+    
+    print(f"[click_cards_and_extract_info] FIXED card area: x={card_area_x}, y={card_area_y}, w={card_area_w}, h={card_area_h}")
+    print(f"[click_cards_and_extract_info] Header dimensions for reference: w={header_template.shape[1]}, h={header_template.shape[0]}")
+    
+    if card_area_w <= 0 or card_area_h <= 0:
+        print(f"[click_cards_and_extract_info] Card area dimensions invalid: {card_area_w}x{card_area_h}")
+        return {}
+    
+    print(f"[click_cards_and_extract_info] Card collection area: {card_area_x}, {card_area_y}, {card_area_w}x{card_area_h}")
+    
+    # Step 6: FIXED CARD DETECTION - Use reference image approach for reliable card positions
+    # Save the full window screenshot for debugging
+    cv2.imwrite("tmp_rovodev_full_window.png", full_window_img)
+    print(f"[click_cards_and_extract_info] Saved full window screenshot as tmp_rovodev_full_window.png")
+    
+    # Extract card area based on reference image dimensions
+    card_area_img = full_window_img[card_area_y:card_area_y + card_area_h, card_area_x:card_area_x + card_area_w]
+    cv2.imwrite("tmp_rovodev_card_area.png", card_area_img)
+    print(f"[click_cards_and_extract_info] Saved card area as tmp_rovodev_card_area.png")
+    
+    # IMPROVED: Use fixed grid approach based on reference image
+    # From first_row_full.png, we can see 6 cards in a horizontal row
+    # Each card should be approximately equal width
+    area_h, area_w = card_area_img.shape[:2]
+    
+    # Calculate card positions using equal-width division
+    card_width = area_w // 6  # Divide area width by 6 cards
+    card_height = min(area_h, int(card_width * 1.4))  # Card aspect ratio approximately 1:1.4
+    
+    # Start from top of area, center cards vertically if needed
+    start_y = max(0, (area_h - card_height) // 2)
+    
+    cards_to_process = []
+    
+    for i in range(6):
+        # Calculate card position
+        card_x = i * card_width
+        card_y = start_y
+        
+        # Add small margins to ensure we don't cut card borders
+        margin_x = int(card_width * 0.05)  # 5% margin
+        margin_y = int(card_height * 0.05)
+        
+        # Adjust boundaries to include margins but stay within bounds
+        final_x = max(0, card_x + margin_x)
+        final_y = max(0, card_y + margin_y) 
+        final_w = min(area_w - final_x, card_width - 2 * margin_x)
+        final_h = min(area_h - final_y, card_height - 2 * margin_y)
+        
+        if final_w > 10 and final_h > 10:  # Ensure minimum size
+            # Extract card image
+            card_img = card_area_img[final_y:final_y + final_h, final_x:final_x + final_w].copy()
+            
+            # Save individual card for debugging in test_identifier folder
+            card_path = Path(f"test_identifier/card_{i+1:02d}.png")
+            card_path.parent.mkdir(exist_ok=True)
+            cv2.imwrite(str(card_path), card_img)
+            print(f"[click_cards_and_extract_info] Saved card {i+1} as {card_path}")
+            
+            # Store card with its bounding box (relative to card area)
+            cards_to_process.append((card_img, (final_x, final_y, final_w, final_h)))
+            print(f"[click_cards_and_extract_info] Card {i+1}: position=({final_x},{final_y}), size=({final_w}x{final_h})")
+        else:
+            print(f"[click_cards_and_extract_info] Warning: Card {i+1} has invalid dimensions: {final_w}x{final_h}")
+    
+    print(f"[click_cards_and_extract_info] Successfully detected {len(cards_to_process)} cards using fixed grid approach")
+    
+    # Step 7: Enhanced description zone detection function
+    def detect_and_capture_description_zone(window_img: np.ndarray) -> Optional[np.ndarray]:
+        """
+        Detect the card_header.PNG template on screen and capture the description area below it.
+        Returns the description zone image or None if failed.
+        """
+        # Load card_header template
+        card_header_path = Path("templates/card_header.PNG")
+        if not card_header_path.exists():
+            print(f"[detect_and_capture_description_zone] Card header template not found at {card_header_path}")
+            return None
+        
+        card_header_template = cv2.imread(str(card_header_path))
+        if card_header_template is None:
+            print(f"[detect_and_capture_description_zone] Failed to load card header template")
+            return None
+        
+        # Convert to grayscale for template matching
+        gray_window = cv2.cvtColor(window_img, cv2.COLOR_BGR2GRAY)
+        gray_card_header = cv2.cvtColor(card_header_template, cv2.COLOR_BGR2GRAY)
+        
+        # Perform template matching
+        res = cv2.matchTemplate(gray_window, gray_card_header, cv2.TM_CCOEFF_NORMED)
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+        
+        # Check if match confidence is sufficient
+        confidence_threshold = 0.4  # Lower threshold for more flexibility
+        if max_val < confidence_threshold:
+            print(f"[detect_and_capture_description_zone] Card header template match confidence too low: {max_val:.3f} (threshold: {confidence_threshold})")
+            return None
+        
+        # Get header position and dimensions
+        header_x, header_y = max_loc
+        header_h, header_w = gray_card_header.shape[:2]
+        print(f"[detect_and_capture_description_zone] Found card header at position: ({header_x}, {header_y}) with confidence {max_val:.3f}")
+        
+        # Define description zone area below the header
+        desc_zone_x = header_x
+        desc_zone_y = header_y + header_h + 5  # Small gap after header
+        # Use proportional dimensions based on window size
+        window_h, window_w = window_img.shape[:2]
+        desc_zone_w = min(int(window_w * 0.22), header_w * 3)  # ~22% of window width for card info box
+        
+        # CHANGE 1: Expand description zone height by 73% from the original 16%
+        original_desc_zone_h = int(window_h * 0.16)  # Original 16% of window height
+        desc_zone_h = int(original_desc_zone_h * 1.73)  # Increase by 73% for expanded capture area
+        print(f"[detect_and_capture_description_zone] Expanded description zone height from {original_desc_zone_h} to {desc_zone_h} pixels (73% increase)")
+        
+        # Ensure we don't go outside window boundaries
+        desc_zone_h = min(desc_zone_h, window_h - desc_zone_y)
+        
+        if desc_zone_w <= 0 or desc_zone_h <= 0:
+            print(f"[detect_and_capture_description_zone] Description zone dimensions invalid: {desc_zone_w}x{desc_zone_h}")
+            return None
+        
+        # Capture the description zone
+        description_zone = window_img[desc_zone_y:desc_zone_y + desc_zone_h,
+                                    desc_zone_x:desc_zone_x + desc_zone_w]
+        
+        print(f"[detect_and_capture_description_zone] Successfully captured description zone: {desc_zone_w}x{desc_zone_h} pixels")
+        return description_zone
+    
+    # Step 8: Process each card by clicking and extracting info
+    card_summary = {}  # Dictionary to store card name -> total count
+    
+    for i, (card_img, card_bbox) in enumerate(cards_to_process):
+        print(f"\n[click_cards_and_extract_info] Processing card {i+1}/{len(cards_to_process)}")
+        
+        # Calculate click position (center of card relative to screen)
+        # card_bbox is relative to card_area_img, so we need to add offsets
+        card_x, card_y, card_w, card_h = card_bbox
+        
+        # FIXED: Proper click position calculation
+        # Add window position + card_area position + card position within area
+        click_x = left + card_area_x + card_x + card_w // 2
+        click_y = top + card_area_y + card_y + card_h // 2
+        
+        print(f"[click_cards_and_extract_info] Card {i+1} calculation:")
+        print(f"  Window: ({left}, {top})")
+        print(f"  Card area offset: ({card_area_x}, {card_area_y})")  
+        print(f"  Card bbox: ({card_x}, {card_y}, {card_w}, {card_h})")
+        print(f"  Final click position: ({click_x}, {click_y})")
+        
+        try:
+            # Click on the card
+            pyautogui.click(click_x, click_y)
+            time.sleep(0.8)  # Wait for description to appear
+            
+            # Capture new screenshot after clicking
+            clicked_window_img = grab_region((left, top, width, height))
+            
+            # Detect and capture description zone
+            desc_zone_img = detect_and_capture_description_zone(clicked_window_img)
+            
+            if desc_zone_img is not None:
+                # Save description zone in test_identifier folder as requested
+                desc_path = Path(f"test_identifier/desc_{i+1:02d}.png")
+                desc_path.parent.mkdir(exist_ok=True)
+                cv2.imwrite(str(desc_path), desc_zone_img)
+                print(f"[click_cards_and_extract_info] Saved description zone {i+1} as {desc_path}")
+                
+                # Extract card name and count from description zone
+                card_name, count = ocr_description_zone_card_info(desc_zone_img, card_number=i+1)
+                
+                if card_name:  # Only process if we got a card name
+                    # CHANGE 3: Aggregate counts for duplicate card names
+                    if card_name in card_summary:
+                        card_summary[card_name] += count
+                        print(f"[click_cards_and_extract_info] Updated existing card '{card_name}': now {card_summary[card_name]} total")
+                    else:
+                        card_summary[card_name] = count
+                        print(f"[click_cards_and_extract_info] New card '{card_name}': {count}")
+                else:
+                    print(f"[click_cards_and_extract_info] Could not extract card name from description zone")
+            else:
+                print(f"[click_cards_and_extract_info] Could not detect description zone for card {i+1}")
+                
+        except Exception as e:
+            print(f"[click_cards_and_extract_info] Error processing card {i+1}: {e}")
+            continue
+    
+    print(f"\n[click_cards_and_extract_info] Completed processing {len(cards_to_process)} cards")
+    return card_summary
+
 def find_and_extract_first_row_cards(win) -> bool:
     """
     Find the header template, locate the card collection area below it,
@@ -1017,7 +1386,10 @@ def find_and_extract_first_row_cards(win) -> bool:
         # Use proportional dimensions based on window size
         window_h, window_w = window_img.shape[:2]
         desc_zone_w = min(int(window_w * 0.22), header_w * 3)  # ~22% of window width for card info box
-        desc_zone_h = int(window_h * 0.16)  # ~16% of window height for description area
+        # CHANGE 1: Expand description zone height by 73% from the original 16%
+        original_desc_zone_h = int(window_h * 0.16)  # Original 16% of window height
+        desc_zone_h = int(original_desc_zone_h * 1.73)  # Increase by 73% for expanded capture area
+        print(f"[detect_and_capture_description_zone] Expanded description zone height from {original_desc_zone_h} to {desc_zone_h} pixels (73% increase)")
         
         # Ensure we don't go outside window boundaries
         window_h, window_w = window_img.shape[:2]
@@ -1452,7 +1824,84 @@ def find_and_extract_first_row_cards(win) -> bool:
 
 # ---------- Entrypoint ----------
 
+def print_card_summary(card_summary: Dict[str, int]):
+    """
+    CHANGE 3: Print final summary of all cards and counts.
+    Handles duplicate card name aggregation as specified.
+    """
+    if not card_summary:
+        print("\n=== FINAL CARD SUMMARY ===")
+        print("No cards were successfully processed.")
+        return
+    
+    print(f"\n=== FINAL CARD SUMMARY ===")
+    print(f"Found {len(card_summary)} unique card(s):")
+    print("-" * 50)
+    
+    total_cards = 0
+    for card_name, count in sorted(card_summary.items()):
+        print(f"{card_name}: x{count}")
+        total_cards += count
+    
+    print("-" * 50)
+    print(f"Total unique cards: {len(card_summary)}")
+    print(f"Total card count: {total_cards}")
+
 def main():
+    """
+    Modified main function to use the new card clicking and extraction functionality.
+    CHANGE 2 & 3: Implements the complete workflow as specified.
+    """
+    print("Starting Master Duel Enhanced Collection Scanner...")
+    print("This will detect the first 6 cards, click each one, and extract card information.")
+    
+    # Find game window
+    win = find_game_window()
+    if not win:
+        print("Could not find Master Duel window. Please ensure the game is open and visible.")
+        return
+    
+    print("Game window found. Starting card detection and clicking process...")
+    
+    # CHANGE 2: Use new function that clicks cards and extracts info
+    card_summary = click_cards_and_extract_info(win)
+    
+    # CHANGE 3: Print final summary with aggregated counts
+    print_card_summary(card_summary)
+    
+    print("\n=== Process Complete ===")
+    print("The enhanced collection scanner has finished processing the first row of cards.")
+    if card_summary:
+        print("Check the output above for the complete card summary with counts.")
+    else:
+        print("No cards were successfully processed. Please check the game window and templates.")
+    
+    # Cleanup temporary files
+    cleanup_temp_files()
+
+def cleanup_temp_files():
+    """Remove temporary debugging files created during execution."""
+    temp_files = [
+        "tmp_rovodev_full_window.png",
+        "tmp_rovodev_card_area.png"
+    ]
+    
+    # Card and description files are now saved in test_identifier permanently
+    # Only clean up the main debugging files
+    
+    removed_count = 0
+    for file_path in temp_files:
+        try:
+            if Path(file_path).exists():
+                Path(file_path).unlink()
+                removed_count += 1
+        except Exception as e:
+            print(f"[cleanup] Could not remove {file_path}: {e}")
+    
+    if removed_count > 0:
+        print(f"[cleanup] Removed {removed_count} temporary debugging files.")
+
+def main_original():
     print("Master Duel collection scraper - starting")
     
     # Find game window
