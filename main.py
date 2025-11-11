@@ -84,6 +84,7 @@ USE_SSIM = True  # use SSIM if available for more robust equality checks
 # Set to True to enable debug output and save debug images
 Debug = False
 
+
 # Data containers
 @dataclass
 class CardRecord:
@@ -2107,7 +2108,9 @@ def click_cards_and_extract_info_single_row(
 
         except Exception as e:
             if Debug:
-                print(f"[click_cards_and_extract_info] Error processing card {i + 1}: {e}")
+                print(
+                    f"[click_cards_and_extract_info] Error processing card {i + 1}: {e}"
+                )
             continue
 
         # Store current card info for next iteration
@@ -2207,7 +2210,9 @@ def click_cards_and_extract_info_multi_row(
                 pyautogui.scroll(-1)  # Single scroll down
                 time.sleep(0.3)  # Short pause between scrolls
                 if Debug:
-                    print(f"[multi_row] Scroll {scroll_step + 1}/{scroll_count} completed")
+                    print(
+                        f"[multi_row] Scroll {scroll_step + 1}/{scroll_count} completed"
+                    )
 
             # Wait for UI to stabilize after all scrolls
             time.sleep(1.5)
@@ -2260,7 +2265,9 @@ def process_full_collection_phases(win) -> List[Tuple[str, int]]:
         2,
     ]  # Scroll counts for transitions between rows 5-12
     if Debug:
-        print(f"[process_full_collection_phases] Using scroll pattern: {scroll_pattern}")
+        print(
+            f"[process_full_collection_phases] Using scroll pattern: {scroll_pattern}"
+        )
 
     # Use ordered list to maintain encounter order instead of dictionary
     cards_in_order = []
@@ -2285,7 +2292,9 @@ def process_full_collection_phases(win) -> List[Tuple[str, int]]:
             collection_area_h * 0.20 * (row_num - 1)
         )  # row 1: 0%, row 2: 20%, etc.
         if Debug:
-            print(f"[phase1] Applying vertical offset for row {row_num}: {row_offset}px")
+            print(
+                f"[phase1] Applying vertical offset for row {row_num}: {row_offset}px"
+            )
 
         # Adjust collection coordinates for this row
         row_collection_coords = (
@@ -2362,36 +2371,41 @@ def process_full_collection_phases(win) -> List[Tuple[str, int]]:
 
     if Debug:
         print(f"\n{'=' * 60}")
-        print("PHASE 2: Processing next 8 rows with scrolling")
+        print("PHASE 2: Processing rows with scrolling until end of collection")
         print(f"{'=' * 60}")
 
-    # PHASE 2: Process the next 8 rows (rows 5-12) with scrolling
+    # PHASE 2: Process rows starting from 5, in sets of 8, until end of collection
     # Use the bottom 5th row (row 5) as the reference for the fixed detection area
-    try:
-        for idx, row_num in enumerate(range(5, 13)):  # Rows 5-12 (8 iterations)
-            if Debug:
-                print(f"\n{'-' * 40}")
-                print(f"PROCESSING PHASE 2 - ROW {row_num} (Iteration {idx+1})")
-                print(f"{'-' * 40}")
+    phase2_start_row = 5
+    while True:
+        try:
+            for idx in range(8):
+                row_num = phase2_start_row + idx
+                if Debug:
+                    print(f"\n{'-' * 40}")
+                    print(
+                        f"PROCESSING PHASE 2 - ROW {row_num} (Iteration {idx + 1} of set starting at {phase2_start_row})"
+                    )
+                    print(f"{'-' * 40}")
 
-            # For the first row in Phase 2 (row 5), don't scroll yet
-            if idx > 0:  # Only scroll for iterations after the first
-                # Get scroll count for this transition (idx-1 because array is 0-indexed for the phase)
-                if idx - 1 < len(scroll_pattern):
-                    scroll_count = scroll_pattern[idx - 1]
-                    if Debug:
-                        print(
-                            f"[phase2] Scrolling from previous position: {scroll_count} scroll(s)"
-                        )
-
-                    # Apply the specified number of scrolls for this transition
-                    for scroll_step in range(scroll_count):
-                        pyautogui.scroll(-1)  # Single scroll down
-                        time.sleep(0.3)  # Short pause between scrolls
+                # For the first row in each set (idx 0), don't scroll yet
+                if idx > 0:  # Only scroll for iterations after the first
+                    # Get scroll count for this transition (idx-1 because array is 0-indexed for the phase)
+                    if idx - 1 < len(scroll_pattern):
+                        scroll_count = scroll_pattern[idx - 1]
                         if Debug:
                             print(
-                                f"[phase2] Scroll {scroll_step + 1}/{scroll_count} completed"
+                                f"[phase2] Scrolling from previous position: {scroll_count} scroll(s)"
                             )
+
+                        # Apply the specified number of scrolls for this transition
+                        for scroll_step in range(scroll_count):
+                            pyautogui.scroll(-1)  # Single scroll down
+                            time.sleep(0.3)  # Short pause between scrolls
+                            if Debug:
+                                print(
+                                    f"[phase2] Scroll {scroll_step + 1}/{scroll_count} completed"
+                                )
 
                     # Wait for UI to stabilize after all scrolls
                     time.sleep(1.5)
@@ -2400,74 +2414,87 @@ def process_full_collection_phases(win) -> List[Tuple[str, int]]:
                             f"[phase2] All {scroll_count} scroll(s) completed, ready for row {row_num}"
                         )
 
-            # Call helper and handle early-termination signal
-            try:
-                row_summary = click_cards_and_extract_info_single_row(
-                    win,
-                    row_number=row_num,
-                    collection_coords=phase2_collection_coords,
-                    card_dims=card_dims,
-                )
-            except EndOfCollection as e:
-                # merge partial summary from the helper and stop scanning further rows
-                if getattr(e, "partial", None):
-                    for cname, cnt in e.partial.items():
-                        # merge into cards_in_order preserving encounter order
-                        found_existing = False
-                        for j, (existing_name, existing_count) in enumerate(
-                            cards_in_order
-                        ):
-                            if existing_name == cname:
-                                cards_in_order[j] = (
-                                    existing_name,
-                                    existing_count + cnt,
-                                )
-                                found_existing = True
-                                break
-                        if not found_existing:
-                            cards_in_order.append((cname, cnt))
-                if Debug:
-                    print(
-                        "[process_full_collection_phases] End of collection detected during Phase 2 — stopping further rows."
-                    )
-                break  # stop the for loop (and Phase 2)
-
-            # Add results from this row in encounter order (normal merge path)
-            for card_name, count in row_summary.items():
-                # Skip empty card names
-                if not card_name or card_name.strip() == "":
+                # Skip row detection and card analysis for iteration #8 (idx == 7)
+                if idx == 7:
                     if Debug:
-                        print(f"[phase2] Skipping empty card name")
+                        print(
+                            f"[phase2] Skipping row detection and card analysis for iteration #8 (row {row_num}) - performing scrolling only"
+                        )
                     continue
 
-                # Check if card already encountered
-                found_existing = False
-                for k, (existing_name, existing_count) in enumerate(cards_in_order):
-                    if existing_name == card_name:
-                        # Update existing entry
-                        cards_in_order[k] = (existing_name, existing_count + count)
-                        if Debug:
-                            print(
-                                f"[phase2] Combined counts for '{card_name}': now {existing_count + count} total"
-                            )
-                        found_existing = True
-                        break
-
-                if not found_existing:
-                    # Add new card in encounter order
-                    cards_in_order.append((card_name, count))
+                # Call helper and handle early-termination signal
+                try:
+                    row_summary = click_cards_and_extract_info_single_row(
+                        win,
+                        row_number=row_num,
+                        collection_coords=phase2_collection_coords,
+                        card_dims=card_dims,
+                    )
+                except EndOfCollection as e:
+                    # merge partial summary from the helper and stop scanning further rows
+                    if getattr(e, "partial", None):
+                        for cname, cnt in e.partial.items():
+                            # merge into cards_in_order preserving encounter order
+                            found_existing = False
+                            for j, (existing_name, existing_count) in enumerate(
+                                cards_in_order
+                            ):
+                                if existing_name == cname:
+                                    cards_in_order[j] = (
+                                        existing_name,
+                                        existing_count + cnt,
+                                    )
+                                    found_existing = True
+                                    break
+                            if not found_existing:
+                                cards_in_order.append((cname, cnt))
                     if Debug:
-                        print(f"[phase2] New card '{card_name}': {count}")
+                        print(
+                            "[process_full_collection_phases] End of collection detected during Phase 2 — stopping further rows."
+                        )
+                    return cards_in_order  # stop completely
 
+                # Add results from this row in encounter order (normal merge path)
+                for card_name, count in row_summary.items():
+                    # Skip empty card names
+                    if not card_name or card_name.strip() == "":
+                        if Debug:
+                            print(f"[phase2] Skipping empty card name")
+                        continue
+
+                    # Check if card already encountered
+                    found_existing = False
+                    for k, (existing_name, existing_count) in enumerate(cards_in_order):
+                        if existing_name == card_name:
+                            # Update existing entry
+                            cards_in_order[k] = (existing_name, existing_count + count)
+                            if Debug:
+                                print(
+                                    f"[phase2] Combined counts for '{card_name}': now {existing_count + count} total"
+                                )
+                            found_existing = True
+                            break
+
+                    if not found_existing:
+                        # Add new card in encounter order
+                        cards_in_order.append((card_name, count))
+                        if Debug:
+                            print(f"[phase2] New card '{card_name}': {count}")
+
+                if Debug:
+                    print(
+                        f"[phase2] Row {row_num} completed. Current total unique cards: {len(cards_in_order)}"
+                    )
+
+            phase2_start_row += 8
+
+        except Exception as e:
+            # Catch unexpected errors so we can log and fail gracefully
             if Debug:
                 print(
-                    f"[phase2] Row {row_num} completed. Current total unique cards: {len(cards_in_order)}"
+                    f"[process_full_collection_phases] Unexpected error during Phase 2: {e}"
                 )
-
-    except Exception as e:
-        # Catch unexpected errors so we can log and fail gracefully
-        if Debug:
-            print(f"[process_full_collection_phases] Unexpected error during Phase 2: {e}")
+            break
 
     # end of Phase 2
     if Debug:
@@ -2517,7 +2544,9 @@ def find_and_extract_first_row_cards(win) -> bool:
             )
     except Exception as e:
         if Debug:
-            print(f"[find_and_extract_first_row_cards] Failed to grab window region: {e}")
+            print(
+                f"[find_and_extract_first_row_cards] Failed to grab window region: {e}"
+            )
         return False
 
     # Step 3: Load header template
