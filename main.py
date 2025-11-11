@@ -476,7 +476,13 @@ def ocr_description_zone_card_info(desc_zone_img: np.ndarray, lang: str = "eng",
     
     # Save the specific text region being used for OCR for debugging
     if card_number > 0:
-        title_path = Path(f"test_identifier/row{row_number}/title_{card_number:02d}.png")
+        # Determine the appropriate directory based on row number
+        if row_number <= 4:
+            # Phase 1: rows 1-4 - need subdirectories for each row within phase1
+            title_path = Path(f"test_identifier/phase1/row_{row_number:02d}/title_{card_number:02d}.png")
+        else:
+            # Phase 2: rows 5-12 organized in row_XX subdirectories under phase2
+            title_path = Path(f"test_identifier/phase2/row_{row_number:02d}/title_{card_number:02d}.png")
         title_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(title_path), name_region)
         print(f"[ocr_description_zone_card_info] Saved title region for card {card_number} as {title_path}")
@@ -552,7 +558,12 @@ def ocr_description_zone_card_info(desc_zone_img: np.ndarray, lang: str = "eng",
             
             # Save count region for debugging
             if card_number > 0:
-                count_path = Path(f"test_identifier/row{row_number}/count_{card_number:02d}.png")
+                if row_number <= 4:
+                    # Phase 1: rows 1-4 - need subdirectories for each row within phase1
+                    count_path = Path(f"test_identifier/phase1/row_{row_number:02d}/count_{card_number:02d}.png")
+                else:
+                    # Phase 2: rows 5-12 organized in row_XX subdirectories under phase2
+                    count_path = Path(f"test_identifier/phase2/row_{row_number:02d}/count_{card_number:02d}.png")
                 count_path.parent.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(count_path), count_region)
                 print(f"[ocr_description_zone_card_info] Saved count region (under header) for card {card_number} as {count_path}")
@@ -1077,7 +1088,111 @@ def detect_card_borders(card_region_img: np.ndarray) -> Optional[Tuple[int, int,
     print("[detect_card_borders] All detection methods including fallback failed")
     return None
 
-def click_cards_and_extract_info_single_row(win, row_number: int = 1) -> Dict[str, int]:
+def detect_full_collection_area(win):
+    """
+    Detect the full collection area and save it as full_collection.png with grid lines.
+    This function captures the entire card collection area and identifies the grid structure.
+    Returns collection coordinates (x, y, w, h) for the full collection area.
+    """
+    print(f"[detect_full_collection_area] Detecting full collection area...")
+
+    # Step 1: Get window coordinates and handle negative coords
+    left, top, width, height = win.left, win.top, win.width, win.height
+
+    if left < 0 or top < 0:
+        print(f"[detect_full_collection_area] Window at negative coords ({left},{top}). Attempting to move window to primary monitor (8,8).")
+        try:
+            win.moveTo(8, 8)
+            time.sleep(0.35)
+            left, top, width, height = win.left, win.top, win.width, win.height
+            print(f"[detect_full_collection_area] Window moved to {left},{top} (size {width}x{height})")
+        except Exception as e:
+            print(f"[detect_full_collection_area] Could not move window: {e}. Proceeding with original coords.")
+
+    # Step 2: Grab full window screenshot
+    try:
+        full_window_img = grab_region((left, top, width, height))
+        print(f"[detect_full_collection_area] Captured window screenshot: {full_window_img.shape}")
+    except Exception as e:
+        print(f"[detect_full_collection_area] Failed to grab window region: {e}")
+        return None, None
+
+    # Step 3: Load header template
+    header_template_path = Path("templates/header.PNG")
+    if not header_template_path.exists():
+        print(f"[detect_full_collection_area] Header template not found at {header_template_path}")
+        return None, None
+
+    header_template = cv2.imread(str(header_template_path))
+    if header_template is None:
+        print(f"[detect_full_collection_area] Failed to load header template from {header_template_path}")
+        return None, None
+
+    print(f"[detect_full_collection_area] Loaded header template: {header_template.shape}")
+
+    # Step 4: Find header in window using template matching
+    gray_window = cv2.cvtColor(full_window_img, cv2.COLOR_BGR2GRAY)
+    gray_header = cv2.cvtColor(header_template, cv2.COLOR_BGR2GRAY)
+
+    res = cv2.matchTemplate(gray_window, gray_header, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+
+    if max_val < 0.5:
+        print(f"[detect_full_collection_area] Header template match confidence too low: {max_val:.3f} (threshold: 0.5)")
+        return None, None
+
+    header_x, header_y = max_loc
+    header_h, header_w = gray_header.shape[:2]
+    print(f"[detect_full_collection_area] Found header at window-relative position: ({header_x}, {header_y}) with confidence {max_val:.3f}")
+
+    # Step 5: Define full collection area boundaries
+    collection_area_margin = int(header_w * 0.02)  # 2% margin from header edge to first card
+    collection_area_x = header_x + collection_area_margin
+    collection_area_w = int(header_w * 0.935)  # Cards use ~93.5% of header width to include full 6th card
+    
+    # Define collection area starting from just below the header
+    collection_area_y = header_y + header_h + 10
+    collection_area_h = height - collection_area_y - 50  # Extend to bottom of window (with 50px margin for UI)
+
+    # Capture the full collection area
+    full_collection_img = full_window_img[collection_area_y:collection_area_y + collection_area_h,
+                                        collection_area_x:collection_area_x + collection_area_w]
+
+    # NEW: Add complete grid divider lines to full collection image
+    full_collection_with_grid = full_collection_img.copy()
+
+    # Calculate grid dimensions for the full collection - for 5 rows as required
+    card_width = collection_area_w // 6  # Width of each card column
+    card_height = collection_area_h // 5  # Height of each card row (5 rows as specified)
+
+    # Draw 5 VERTICAL lines to separate 6 columns
+    for col in range(1, 6):  # Lines between columns 1-2, 2-3, 3-4, 4-5, 5-6
+        line_x = col * card_width
+        cv2.line(full_collection_with_grid, (line_x, 0), (line_x, collection_area_h), (0, 255, 0), 2)  # Green vertical lines
+        print(f"[grid] Drew vertical line {col} at x={line_x}")
+
+    # Draw 4 HORIZONTAL lines to separate 5 rows (as specified - not 7)
+    for row in range(1, 5):  # Lines between rows 1-2, 2-3, 3-4, 4-5 (4 lines for 5 rows)
+        line_y = row * card_height
+        cv2.line(full_collection_with_grid, (0, line_y), (collection_area_w, line_y), (0, 255, 0), 2)  # Green horizontal lines
+        print(f"[grid] Drew horizontal line {row} at y={line_y}")
+
+    # Create phase1 directory if it doesn't exist
+    phase1_dir = Path("test_identifier/phase1")
+    phase1_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save the complete collection screenshot with grid
+    collection_path = phase1_dir / "full_collection.png"
+    cv2.imwrite(str(collection_path), full_collection_with_grid)
+    print(f"[detect_full_collection_area] Saved ENTIRE collection area with COMPLETE GRID as {collection_path}")
+    print(f"[detect_full_collection_area] Full collection dimensions: {collection_area_w}x{collection_area_h}")
+    print(f"[detect_full_collection_area] Grid: 6 columns ({card_width}px each) x 8 rows ({card_height}px each)")
+
+    # Return the collection coordinates for use in other functions
+    return (collection_area_x, collection_area_y, collection_area_w, collection_area_h), (card_width, card_height)
+
+
+def click_cards_and_extract_info_single_row(win, row_number: int = 1, collection_coords=None, card_dims=None) -> Dict[str, int]:
     """
     CHANGE 2: Process a single row of 6 cards - detects cards, clicks each one,
     captures the description zone, extracts card name and count, and returns summary.
@@ -1133,6 +1248,20 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1) -> Dict[st
     header_x, header_y = max_loc
     header_h, header_w = gray_header.shape[:2]
     print(f"[click_cards_and_extract_info] Found header at window-relative position: ({header_x}, {header_y}) with confidence {max_val:.3f}")
+
+    # --- respect incoming collection_coords (window-relative) if provided ---
+    if collection_coords is not None:
+        # collection_coords is expected window-relative: (x,y,w,h)
+        card_area_x, card_area_y, card_area_w, card_area_h = map(int, collection_coords)
+        print(f"[click_cards_and_extract_info] Using passed-in collection_coords: {card_area_x},{card_area_y},{card_area_w}x{card_area_h}")
+    else:
+        card_area_margin = int(header_w * 0.02)
+        card_area_x = header_x + card_area_margin
+        card_area_w = int(header_w * 0.935)
+        card_area_y = header_y + header_h + 10
+        card_area_h = height - card_area_y - 50
+        print(f"[click_cards_and_extract_info] Computed collection area from header: {card_area_x},{card_area_y},{card_area_w}x{card_area_h}")
+    # --------------------------------------------------------------------
     
     # Step 5: Define card collection boundaries - row-specific vs full collection
     
@@ -1178,8 +1307,8 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1) -> Dict[st
         print(f"[click_cards_and_extract_info_single_row] Full collection dimensions: {card_area_w}x{collection_area_h}")
         print(f"[click_cards_and_extract_info_single_row] Grid: 6 columns ({card_width}px each) x 5 rows ({card_height}px each)")
     
-    # Use fixed positioning for individual row processing - after scroll, next row appears in same position
-    card_area_y = header_y + header_h + 10
+    # Erroneous, should not be in PHASE 1
+    # card_area_y = header_y + header_h + 10
     
     # Estimated card dimensions for individual row
     estimated_card_width = card_area_w // 6
@@ -1216,9 +1345,26 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1) -> Dict[st
         line_x = i * card_width
         cv2.line(row_full_img, (line_x, 0), (line_x, card_area_h), (0, 255, 0), 2)  # Green lines
     
-    # Save the row_full screenshot with boundaries
-    row_full_path = Path(f"test_identifier/row{row_number}/{row_number}_row_full.png")
-    row_full_path.parent.mkdir(parents=True, exist_ok=True)
+    # Save the row_full screenshot with boundaries in the appropriate directory
+    row_full_img = card_area_img.copy()
+
+    # Draw card boundary lines on the row_full image for visualization
+    card_width_in_row = card_area_w // 6
+    for i in range(1, 6):  # Draw 5 vertical lines to separate 6 cards
+        line_x = i * card_width_in_row
+        cv2.line(row_full_img, (line_x, 0), (line_x, card_area_h), (0, 255, 0), 2)  # Green lines
+
+    # Create the appropriate directory structure based on row number
+    if row_number <= 4:
+        # Phase 1: rows 1-4 - need subdirectories for each row within phase1
+        output_dir = Path(f"test_identifier/phase1/row_{row_number:02d}")
+    else:
+        # Phase 2: rows 5-12 organized in row_XX subdirectories under phase2
+        output_dir = Path(f"test_identifier/phase2/row_{row_number:02d}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save the row_full screenshot with boundaries in the appropriate directory
+    row_full_path = output_dir / f"{row_number}_row_full.png"
     cv2.imwrite(str(row_full_path), row_full_img)
     print(f"[click_cards_and_extract_info_single_row] Saved row {row_number} full screenshot with boundaries as {row_full_path}")
     
@@ -1255,9 +1401,8 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1) -> Dict[st
             # Extract card image
             card_img = card_area_img[final_y:final_y + final_h, final_x:final_x + final_w].copy()
             
-            # Save individual card for debugging in row-specific folder
-            card_path = Path(f"test_identifier/row{row_number}/card_{i+1:02d}.png")
-            card_path.parent.mkdir(parents=True, exist_ok=True)
+            # Save individual card for debugging in the appropriate directory
+            card_path = output_dir / f"card_{i+1:02d}.png"
             cv2.imwrite(str(card_path), card_img)
             print(f"[click_cards_and_extract_info_single_row] Saved detected card {i+1} as {card_path}")
             
@@ -1373,9 +1518,8 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1) -> Dict[st
             desc_zone_img = detect_and_capture_description_zone(clicked_window_img)
             
             if desc_zone_img is not None:
-                # Save description zone in row-specific folder
-                desc_path = Path(f"test_identifier/row{row_number}/desc_{i+1:02d}.png")
-                desc_path.parent.mkdir(parents=True, exist_ok=True)
+                # Save description zone in the appropriate directory
+                desc_path = output_dir / f"desc_{i+1:02d}.png"
                 cv2.imwrite(str(desc_path), desc_zone_img)
                 print(f"[click_cards_and_extract_info_single_row] Saved description zone {i+1} as {desc_path}")
                 
@@ -1467,6 +1611,165 @@ def click_cards_and_extract_info_multi_row(win, max_rows: int = 8) -> List[Tuple
     
     print(f"\n[click_cards_and_extract_info_multi_row] Completed processing {max_rows} rows")
     return cards_in_order
+
+def process_full_collection_phases(win) -> List[Tuple[str, int]]:
+    """
+    NEW: Process the collection using the redesigned two-phase approach:
+    - PHASE 1: Process first 4 rows without scrolling by clicking partition boxes
+    - PHASE 2: Process next 8 rows using the bottom 5th row as reference with scrolling
+    Returns list of tuples (card_name, count) in encounter order.
+    """
+    print(f"[process_full_collection_phases] Starting redesigned two-phase collection processing...")
+    
+    # Detect the full collection area first and get coordinates
+    collection_coords, card_dims = detect_full_collection_area(win)
+    if collection_coords is None or card_dims is None:
+        print(f"[process_full_collection_phases] Failed to detect full collection area.")
+        return []
+    
+    collection_area_x, collection_area_y, collection_area_w, collection_area_h = collection_coords
+    card_width, card_height = card_dims
+    
+    # SPECIFIC SCROLLING PATTERN (non-negotiable as specified)
+    scroll_pattern = [1, 2, 1, 2, 1, 1, 2]  # Scroll counts for transitions between rows 5-12
+    print(f"[process_full_collection_phases] Using scroll pattern: {scroll_pattern}")
+
+    # Use ordered list to maintain encounter order instead of dictionary
+    cards_in_order = []
+
+    print(f"\n{'='*60}")
+    print("PHASE 1: Processing first 4 rows without scrolling")
+    print(f"{'='*60}")
+    
+    # PHASE 1: Process the first 4 rows without scrolling
+    for row_num in range(1, 5):  # Rows 1-4
+        print(f"\n{'-'*40}")
+        print(f"PROCESSING PHASE 1 - ROW {row_num}")
+        print(f"{'-'*40}")
+        
+        # Calculate vertical offset for this row (20% of collection height per row)
+        collection_area_x, collection_area_y, collection_area_w, collection_area_h = collection_coords
+        row_offset = int(collection_area_h * 0.20 * (row_num - 1))  # row 1: 0%, row 2: 20%, etc.
+        print(f"[phase1] Applying vertical offset for row {row_num}: {row_offset}px")
+        
+        # Adjust collection coordinates for this row
+        row_collection_coords = (
+            collection_area_x,
+            collection_area_y + row_offset,
+            collection_area_w,
+            collection_area_h - row_offset  # Reduce height to avoid going out of bounds
+        )
+        
+        # Process current row in phase 1 with adjusted coordinates
+        row_summary = click_cards_and_extract_info_single_row(
+            win, 
+            row_number=row_num,
+            collection_coords=row_collection_coords,  # Use adjusted coordinates
+            card_dims=card_dims
+        )
+
+        # Add results from this row in encounter order
+        for card_name, count in row_summary.items():
+            # Skip empty card names
+            if not card_name or card_name.strip() == "":
+                print(f"[phase1] Skipping empty card name")
+                continue
+
+            # Check if card already encountered
+            found_existing = False
+            for i, (existing_name, existing_count) in enumerate(cards_in_order):
+                if existing_name == card_name:
+                    # Update existing entry
+                    cards_in_order[i] = (existing_name, existing_count + count)
+                    print(f"[phase1] Combined counts for '{card_name}': now {existing_count + count} total")
+                    found_existing = True
+                    break
+
+            if not found_existing:
+                # Add new card in encounter order
+                cards_in_order.append((card_name, count))
+                print(f"[phase1] New card '{card_name}': {count}")
+
+        print(f"[phase1] Row {row_num} completed. Current total unique cards: {len(cards_in_order)}")
+
+    # --- Minimal addition: compute the fixed Phase-2 collection box (row-5 reference) ---
+    # We want Phase 2 to start at the offset *after* PHASE 1 (i.e. the viewport where row 5 will be detected).
+    collection_area_x, collection_area_y, collection_area_w, collection_area_h = collection_coords  # re-use detected full collection
+    # For row index starting at 1.., the offset used earlier was: offset = int(collection_area_h * 0.20 * (row_num - 1))
+    # After processing rows 1-4, we want the offset for the start of Phase 2 == 0.20 * 4 (i.e. row 5 reference).
+    phase2_start_offset = int(collection_area_h * 0.20 * 4)  # 80% down from top of the full collection area
+    phase2_collection_coords = (
+        collection_area_x,
+        collection_area_y + phase2_start_offset,
+        collection_area_w,
+        max(50, collection_area_h - phase2_start_offset)  # reduce height to avoid out-of-bounds; keep a minimum
+    )
+    print(f"[process_full_collection_phases] Phase-2 fixed collection_coords (row5 ref): {phase2_collection_coords}")
+    # ----------------------------------------------------------------
+
+    print(f"\n{'='*60}")
+    print("PHASE 2: Processing next 8 rows with scrolling")
+    print(f"{'='*60}")
+    
+    # PHASE 2: Process the next 8 rows (rows 5-12) with scrolling
+    # Use the bottom 5th row (row 5) as the reference for the fixed detection area
+    for idx, row_num in enumerate(range(5, 13)):  # Rows 5-12 (8 iterations)
+        print(f"\n{'-'*40}")
+        print(f"PROCESSING PHASE 2 - ROW {row_num} (Iteration {idx+1})")
+        print(f"{'-'*40}")
+        
+        # For the first row in Phase 2 (row 5), don't scroll yet
+        if idx > 0:  # Only scroll for iterations after the first
+            # Get scroll count for this transition (idx-1 because array is 0-indexed for the phase)
+            if idx - 1 < len(scroll_pattern):
+                scroll_count = scroll_pattern[idx - 1]
+                print(f"[phase2] Scrolling from previous position: {scroll_count} scroll(s)")
+
+                # Apply the specified number of scrolls for this transition
+                for scroll_step in range(scroll_count):
+                    pyautogui.scroll(-1)  # Single scroll down
+                    time.sleep(0.3)  # Short pause between scrolls
+                    print(f"[phase2] Scroll {scroll_step + 1}/{scroll_count} completed")
+
+                # Wait for UI to stabilize after all scrolls
+                time.sleep(1.5)
+                print(f"[phase2] All {scroll_count} scroll(s) completed, ready for row {row_num}")
+        
+        # Process current row in phase 2 (after scrolling if needed)
+        row_summary = click_cards_and_extract_info_single_row(
+            win, 
+            row_number=row_num,
+            collection_coords=phase2_collection_coords,
+            card_dims=card_dims
+        )
+
+        # Add results from this row in encounter order
+        for card_name, count in row_summary.items():
+            # Skip empty card names
+            if not card_name or card_name.strip() == "":
+                print(f"[phase2] Skipping empty card name")
+                continue
+
+            # Check if card already encountered
+            found_existing = False
+            for i, (existing_name, existing_count) in enumerate(cards_in_order):
+                if existing_name == card_name:
+                    # Update existing entry
+                    cards_in_order[i] = (existing_name, existing_count + count)
+                    print(f"[phase2] Combined counts for '{card_name}': now {existing_count + count} total")
+                    found_existing = True
+                    break
+
+            if not found_existing:
+                # Add new card in encounter order
+                cards_in_order.append((card_name, count))
+                print(f"[phase2] New card '{card_name}': {count}")
+
+        print(f"[phase2] Row {row_num} completed. Current total unique cards: {len(cards_in_order)}")
+
+    print(f"\n[process_full_collection_phases] Completed processing all 12 rows (4 from Phase 1, 8 from Phase 2)")
+    return cards_in_order
+
 
 def find_and_extract_first_row_cards(win) -> bool:
     """
@@ -2050,10 +2353,12 @@ def print_card_summary(cards_in_order: List[Tuple[str, int]]):
 def main():
     """
     Modified main function to use the new card clicking and extraction functionality.
-    CHANGE 2 & 3: Implements the complete workflow as specified.
+    CHANGE 2 & 3: Implements the complete redesigned workflow with two phases.
     """
     print("Starting Master Duel Enhanced Collection Scanner...")
-    print("This will detect the first 6 cards, click each one, and extract card information.")
+    print("This will process the first 12 rows of cards using the redesigned two-phase approach.")
+    print("- Phase 1: Process first 4 rows without scrolling")
+    print("- Phase 2: Process next 8 rows with scrolling using preset pattern")
     
     # Find game window
     win = find_game_window()
@@ -2063,18 +2368,16 @@ def main():
     
     print("Game window found. Starting card detection and clicking process...")
     
-    # CHANGE 2: Use new multi-row function that clicks cards and extracts info for FULL LOOP
-    card_summary = click_cards_and_extract_info_multi_row(win, max_rows=8)
+    # Use the new redesigned two-phase approach to process all 12 rows
+    cards_in_order = process_full_collection_phases(win)
     
-    # CHANGE 3: Print final summary with aggregated counts
-    print_card_summary(card_summary)
+    # Print final summary with aggregated counts
+    print_card_summary(cards_in_order)
     
     print("\n=== Process Complete ===")
-    print("The enhanced collection scanner has finished processing the first row of cards.")
-    if card_summary:
-        print("Check the output above for the complete card summary with counts.")
-    else:
-        print("No cards were successfully processed. Please check the game window and templates.")
+    print("The enhanced collection scanner has finished processing all 12 rows.")
+    print("Check the output above for the complete card summary with counts.")
+    print("Images were saved to test_identifier/phase1/ and test_identifier/phase2/row_XX/ directories.")
     
     # Cleanup temporary files
     cleanup_temp_files()
