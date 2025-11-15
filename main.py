@@ -82,8 +82,7 @@ USE_SSIM = True  # use SSIM if available for more robust equality checks
 # -----------------------------------
 
 # Set to True to enable debug output and save debug images
-Debug = False
-
+Debug = True
 
 # Data containers
 @dataclass
@@ -750,6 +749,89 @@ def ocr_description_zone_card_info(
     if return_count_header:
         return card_name, count, header_x
     return card_name, count
+
+
+def analyze_dism_area(dism_area_img: np.ndarray) -> int:
+    """
+    Analyze the dism_area (bottom-right 15% of description zone) for "Dustable" value
+    using digit analysis similar to count analysis.
+    Returns the detected number, defaulting to 0 if no clear number is found.
+    """
+    if dism_area_img is None or dism_area_img.size == 0:
+        return 0
+    
+    h, w = dism_area_img.shape[:2]
+    
+    if Debug:
+        print(f"[analyze_dism_area] Processing dism_area of size {w}x{h}")
+    
+    try:
+        # Convert to grayscale for processing
+        dism_gray = cv2.cvtColor(dism_area_img, cv2.COLOR_BGR2GRAY)
+        
+        # Resize to improve OCR accuracy
+        dism_gray = cv2.resize(
+            dism_gray,
+            (dism_gray.shape[1] * 3, dism_gray.shape[0] * 3),
+            interpolation=cv2.INTER_CUBIC,
+        )
+        
+        # Apply multiple thresholding approaches for better digit detection
+        _, dism_thresh1 = cv2.threshold(
+            dism_gray, 120, 255, cv2.THRESH_BINARY_INV
+        )
+        _, dism_thresh2 = cv2.threshold(
+            dism_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+        
+        # Configure OCR for digits only
+        cfg_dism = r"--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789"
+        
+        # Try both threshold approaches
+        for thresh_img in [dism_thresh1, dism_thresh2]:
+            try:
+                txt = pytesseract.image_to_string(thresh_img, config=cfg_dism).strip()
+                
+                if Debug:
+                    print(f"[analyze_dism_area] OCR result: '{txt}'")
+                
+                # Look for digits in the text
+                if txt.isdigit():
+                    dustable_value = int(txt)
+                    if Debug:
+                        print(f"[analyze_dism_area] Found clear digit: {dustable_value}")
+                    return dustable_value
+            except Exception as e:
+                if Debug:
+                    print(f"[analyze_dism_area] OCR attempt failed: {e}")
+                continue
+        
+        # If direct OCR didn't work, try to find the largest numeric sequence
+        import re
+        for thresh_img in [dism_thresh1, dism_thresh2]:
+            try:
+                txt = pytesseract.image_to_string(thresh_img, config=r"--oem 3 --psm 7").strip()
+                
+                # Find all numeric sequences
+                numbers = re.findall(r'\d+', txt)
+                if numbers:
+                    # Return the largest number found
+                    dustable_values = [int(num) for num in numbers]
+                    dustable_value = max(dustable_values)
+                    if Debug:
+                        print(f"[analyze_dism_area] Found numbers {numbers}, using max: {dustable_value}")
+                    return dustable_value
+            except Exception as e:
+                if Debug:
+                    print(f"[analyze_dism_area] Fallback OCR attempt failed: {e}")
+                continue
+    
+    except Exception as e:
+        if Debug:
+            print(f"[analyze_dism_area] Error processing dism_area: {e}")
+    
+    # Default to 0 if no clear value is found
+    return 0
 
 
 def ocr_name_and_count(
@@ -2029,6 +2111,53 @@ def click_cards_and_extract_info_single_row(
                         f"[click_cards_and_extract_info_single_row] Saved description zone {i + 1} as {desc_path}"
                     )
 
+                # Extract dism_area (first get 15% of desc_XX area, then refine based on that 15% area's dimensions)
+                h_desc, w_desc = desc_zone_img.shape[:2]
+                
+                # First, get the 15% of description zone, bottom-right corner aligned
+                original_dism_width = int(w_desc * 0.15)
+                original_dism_height = int(h_desc * 0.15)
+                
+                # Calculate bottom-right aligned coordinates for the original 15% area
+                original_dism_x = w_desc - original_dism_width
+                original_dism_y = h_desc - original_dism_height
+                
+                # Ensure we don't go outside bounds (shouldn't happen but for safety)
+                original_dism_x = max(0, original_dism_x)
+                original_dism_y = max(0, original_dism_y)
+                original_dism_width = min(original_dism_width, w_desc - original_dism_x)
+                original_dism_height = min(original_dism_height, h_desc - original_dism_y)
+                
+                # Now, from the 15% area, calculate the refined area:
+                # Remove 33% of the HEIGHT of the 15% area from its WIDTH (from right edge)
+                # Remove 12.5% of the HEIGHT of the 15% area from its HEIGHT (from bottom edge)
+                refined_width = int(original_dism_width - (original_dism_height * 0.33))
+                refined_height = int(original_dism_height - (original_dism_height * 0.125))
+                
+                # Calculate bottom-right aligned coordinates within the 15% area
+                refined_x = original_dism_x + (original_dism_width - refined_width)
+                refined_y = original_dism_y + (original_dism_height - refined_height)
+                
+                # Ensure we don't go outside original bounds
+                refined_x = max(original_dism_x, refined_x)
+                refined_y = max(original_dism_y, refined_y)
+                refined_width = min(refined_width, original_dism_width - (refined_x - original_dism_x))
+                refined_height = min(refined_height, original_dism_height - (refined_y - original_dism_y))
+                
+                # Extract the refined dism_area
+                dism_area_img = desc_zone_img[
+                    refined_y : refined_y + refined_height,
+                    refined_x : refined_x + refined_width
+                ].copy()
+
+                # Save dism_area screenshot in the appropriate directory
+                if Debug and dism_area_img is not None and dism_area_img.size > 0:
+                    dism_path = output_dir / f"dism_{i + 1:02d}.png"
+                    cv2.imwrite(str(dism_path), dism_area_img)
+                    print(
+                        f"[click_cards_and_extract_info_single_row] Saved dism_area {i + 1} as {dism_path}"
+                    )
+
                 # Extract card name and count from description zone
                 card_name, count, count_header_x = ocr_description_zone_card_info(
                     desc_zone_img,
@@ -2036,6 +2165,9 @@ def click_cards_and_extract_info_single_row(
                     row_number=row_number,
                     return_count_header=True,
                 )
+                
+                # Analyze dism_area for "Dustable" value using digit analysis similar to count analysis
+                dustable_value = analyze_dism_area(dism_area_img)
 
                 # For Phase 2 (rows > 4), implement early termination logic (single place)
                 if row_number > 4:
@@ -2078,18 +2210,18 @@ def click_cards_and_extract_info_single_row(
                         previous_card_info = {}
 
                 if card_name:  # Only process if we got a card name
-                    # Aggregate counts for duplicate card names
+                    # Aggregate counts for duplicate card names, also store dustable value (take max if multiple)
                     if card_name in card_summary:
-                        card_summary[card_name] += count
+                        card_summary[card_name] = (card_summary[card_name][0] + count, max(card_summary[card_name][1], dustable_value))
                         if Debug:
                             print(
-                                f"[click_cards_and_extract_info] Updated existing card '{card_name}': now {card_summary[card_name]} total"
+                                f"[click_cards_and_extract_info] Updated existing card '{card_name}': now {card_summary[card_name][0]} total, dustable: {card_summary[card_name][1]}"
                             )
                     else:
-                        card_summary[card_name] = count
+                        card_summary[card_name] = (count, dustable_value)
                         if Debug:
                             print(
-                                f"[click_cards_and_extract_info] New card '{card_name}': {count}"
+                                f"[click_cards_and_extract_info] New card '{card_name}': {count}, dustable: {dustable_value}"
                             )
                 else:
                     if Debug:
@@ -2136,11 +2268,11 @@ def click_cards_and_extract_info_single_row(
 
 def click_cards_and_extract_info_multi_row(
     win, max_rows: int = 8
-) -> List[Tuple[str, int]]:
+) -> List[Tuple[str, int, int]]:
     """
     EXPANDED: Process one full loop of 8 rows with specific scrolling pattern.
     Scrolling pattern between rows: [1, 2, 1, 2, 1, 1, 2] scrolls for transitions 1→2, 2→3, 3→4, 4→5, 5→6, 6→7, 7→8
-    Returns list of tuples (card_name, count) in encounter order.
+    Returns list of tuples (card_name, count, dustable_value) in encounter order.
     """
     if Debug:
         print(
@@ -2165,7 +2297,7 @@ def click_cards_and_extract_info_multi_row(
         row_summary = click_cards_and_extract_info_single_row(win, row_number=row_num)
 
         # Add results from this row in encounter order
-        for card_name, count in row_summary.items():
+        for card_name, (count, dustable_value) in row_summary.items():
             # Skip empty card names
             if not card_name or card_name.strip() == "":
                 if Debug:
@@ -2174,22 +2306,23 @@ def click_cards_and_extract_info_multi_row(
 
             # Check if card already encountered
             found_existing = False
-            for i, (existing_name, existing_count) in enumerate(cards_in_order):
+            for i, (existing_name, existing_count, existing_dustable) in enumerate(cards_in_order):
                 if existing_name == card_name:
-                    # Update existing entry
-                    cards_in_order[i] = (existing_name, existing_count + count)
+                    # Update existing entry - combine counts and take max dustable value
+                    new_dustable = max(existing_dustable, dustable_value)
+                    cards_in_order[i] = (existing_name, existing_count + count, new_dustable)
                     if Debug:
                         print(
-                            f"[multi_row] Combined counts for '{card_name}': now {existing_count + count} total"
+                            f"[multi_row] Combined counts for '{card_name}': now {existing_count + count} total, dustable: {new_dustable}"
                         )
                     found_existing = True
                     break
 
             if not found_existing:
                 # Add new card in encounter order
-                cards_in_order.append((card_name, count))
+                cards_in_order.append((card_name, count, dustable_value))
                 if Debug:
-                    print(f"[multi_row] New card '{card_name}': {count}")
+                    print(f"[multi_row] New card '{card_name}': {count}, dustable: {dustable_value}")
 
         if Debug:
             print(
@@ -2228,12 +2361,12 @@ def click_cards_and_extract_info_multi_row(
     return cards_in_order
 
 
-def process_full_collection_phases(win) -> List[Tuple[str, int]]:
+def process_full_collection_phases(win) -> List[Tuple[str, int, int]]:
     """
     NEW: Process the collection using the redesigned two-phase approach:
     - PHASE 1: Process first 4 rows without scrolling by clicking partition boxes
     - PHASE 2: Process next 8 rows using the bottom 5th row as reference with scrolling
-    Returns list of tuples (card_name, count) in encounter order.
+    Returns list of tuples (card_name, count, dustable_value) in encounter order.
     """
     if Debug:
         print(
@@ -2314,7 +2447,7 @@ def process_full_collection_phases(win) -> List[Tuple[str, int]]:
         )
 
         # Add results from this row in encounter order
-        for card_name, count in row_summary.items():
+        for card_name, (count, dustable_value) in row_summary.items():
             # Skip empty card names
             if not card_name or card_name.strip() == "":
                 if Debug:
@@ -2323,22 +2456,23 @@ def process_full_collection_phases(win) -> List[Tuple[str, int]]:
 
             # Check if card already encountered
             found_existing = False
-            for i, (existing_name, existing_count) in enumerate(cards_in_order):
+            for i, (existing_name, existing_count, existing_dustable) in enumerate(cards_in_order):
                 if existing_name == card_name:
-                    # Update existing entry
-                    cards_in_order[i] = (existing_name, existing_count + count)
+                    # Update existing entry - combine counts and take max dustable value
+                    new_dustable = max(existing_dustable, dustable_value)
+                    cards_in_order[i] = (existing_name, existing_count + count, new_dustable)
                     if Debug:
                         print(
-                            f"[phase1] Combined counts for '{card_name}': now {existing_count + count} total"
+                            f"[phase1] Combined counts for '{card_name}': now {existing_count + count} total, dustable: {new_dustable}"
                         )
                     found_existing = True
                     break
 
             if not found_existing:
                 # Add new card in encounter order
-                cards_in_order.append((card_name, count))
+                cards_in_order.append((card_name, count, dustable_value))
                 if Debug:
-                    print(f"[phase1] New card '{card_name}': {count}")
+                    print(f"[phase1] New card '{card_name}': {count}, dustable: {dustable_value}")
 
         if Debug:
             print(
@@ -2433,21 +2567,24 @@ def process_full_collection_phases(win) -> List[Tuple[str, int]]:
                 except EndOfCollection as e:
                     # merge partial summary from the helper and stop scanning further rows
                     if getattr(e, "partial", None):
-                        for cname, cnt in e.partial.items():
+                        for cname, (cnt, dust_value) in e.partial.items():
                             # merge into cards_in_order preserving encounter order
                             found_existing = False
-                            for j, (existing_name, existing_count) in enumerate(
+                            for j, (existing_name, existing_count, existing_dustable) in enumerate(
                                 cards_in_order
                             ):
                                 if existing_name == cname:
+                                    # Combine counts and take max dustable value
+                                    new_dustable = max(existing_dustable, dust_value)
                                     cards_in_order[j] = (
                                         existing_name,
                                         existing_count + cnt,
+                                        new_dustable
                                     )
                                     found_existing = True
                                     break
                             if not found_existing:
-                                cards_in_order.append((cname, cnt))
+                                cards_in_order.append((cname, cnt, dust_value))
                     if Debug:
                         print(
                             "[process_full_collection_phases] End of collection detected during Phase 2 — stopping further rows."
@@ -2455,7 +2592,7 @@ def process_full_collection_phases(win) -> List[Tuple[str, int]]:
                     return cards_in_order  # stop completely
 
                 # Add results from this row in encounter order (normal merge path)
-                for card_name, count in row_summary.items():
+                for card_name, (count, dustable_value) in row_summary.items():
                     # Skip empty card names
                     if not card_name or card_name.strip() == "":
                         if Debug:
@@ -2464,22 +2601,23 @@ def process_full_collection_phases(win) -> List[Tuple[str, int]]:
 
                     # Check if card already encountered
                     found_existing = False
-                    for k, (existing_name, existing_count) in enumerate(cards_in_order):
+                    for k, (existing_name, existing_count, existing_dustable) in enumerate(cards_in_order):
                         if existing_name == card_name:
-                            # Update existing entry
-                            cards_in_order[k] = (existing_name, existing_count + count)
+                            # Update existing entry - combine counts and take max dustable value
+                            new_dustable = max(existing_dustable, dustable_value)
+                            cards_in_order[k] = (existing_name, existing_count + count, new_dustable)
                             if Debug:
                                 print(
-                                    f"[phase2] Combined counts for '{card_name}': now {existing_count + count} total"
+                                    f"[phase2] Combined counts for '{card_name}': now {existing_count + count} total, dustable: {new_dustable}"
                                 )
                             found_existing = True
                             break
 
                     if not found_existing:
                         # Add new card in encounter order
-                        cards_in_order.append((card_name, count))
+                        cards_in_order.append((card_name, count, dustable_value))
                         if Debug:
-                            print(f"[phase2] New card '{card_name}': {count}")
+                            print(f"[phase2] New card '{card_name}': {count}, dustable: {dustable_value}")
 
                 if Debug:
                     print(
@@ -3225,10 +3363,11 @@ def find_and_extract_first_row_cards(win) -> bool:
 # ---------- Entrypoint ----------
 
 
-def print_card_summary(cards_in_order: List[Tuple[str, int]]):
+def print_card_summary(cards_in_order: List[Tuple[str, int, int]]):
     """
     CHANGE 3: Print final summary of all cards and counts.
     Handles duplicate card name aggregation and maintains encounter order.
+    Now also displays the Dustable value for each card.
     """
     if not cards_in_order:
         print("\n=== FINAL CARD SUMMARY ===")
@@ -3237,24 +3376,24 @@ def print_card_summary(cards_in_order: List[Tuple[str, int]]):
 
     print(f"\n=== FINAL CARD SUMMARY ===")
     print(f"Found {len(cards_in_order)} unique card(s) in encounter order:")
-    print("-" * 60)
+    print("-" * 80)
 
     total_cards = 0
     displayed_count = 0
 
-    for i, (card_name, count) in enumerate(cards_in_order):
+    for i, (card_name, count, dustable_value) in enumerate(cards_in_order):
         # Debug: Show all entries being processed
-        # print(f"[DEBUG] Entry {i+1}: '{card_name}' x{count}")
+        # print(f"[DEBUG] Entry {i+1}: '{card_name}' x{count} dustable:{dustable_value}")
 
         # Only display non-empty card names
         if card_name and card_name.strip():
             displayed_count += 1
-            print(f"{displayed_count}. {card_name}: x{count}")
+            print(f"{displayed_count}. {card_name}: x{count}, Dustable: {dustable_value}")
             total_cards += count
         else:
             print(f"[DEBUG] Skipped empty card name at position {i + 1}")
 
-    print("-" * 60)
+    print("-" * 80)
     # print(f"Total unique cards displayed: {displayed_count}")
     print(f"Total unique cards in list: {len(cards_in_order)}")
     print(f"Total card count: {total_cards}")
