@@ -2131,20 +2131,21 @@ def click_cards_and_extract_info_single_row(
                 # Now, from the 15% area, calculate the refined area:
                 # Remove 33% of the HEIGHT of the 15% area from its WIDTH (from right edge)
                 # Remove 12.5% of the HEIGHT of the 15% area from its HEIGHT (from bottom edge)
-                refined_width = int(original_dism_width - (original_dism_height * 0.33))
-                refined_height = int(original_dism_height - (original_dism_height * 0.125))
+                reduction_width = int(original_dism_height * 0.33)  # 33% of the 15% area's HEIGHT
+                reduction_height = int(original_dism_height * 0.125)  # 12.5% of the 15% area's HEIGHT
                 
-                # Calculate bottom-right aligned coordinates within the 15% area
-                refined_x = original_dism_x + (original_dism_width - refined_width)
-                refined_y = original_dism_y + (original_dism_height - refined_height)
+                refined_width = original_dism_width - reduction_width
+                refined_height = original_dism_height - reduction_height
+                
+                # Align the refined area with the top-left corner of the 15% area
+                refined_x = original_dism_x  # Same top-left x coordinate
+                refined_y = original_dism_y  # Same top-left y coordinate
                 
                 # Ensure we don't go outside original bounds
-                refined_x = max(original_dism_x, refined_x)
-                refined_y = max(original_dism_y, refined_y)
-                refined_width = min(refined_width, original_dism_width - (refined_x - original_dism_x))
-                refined_height = min(refined_height, original_dism_height - (refined_y - original_dism_y))
+                refined_width = min(refined_width, original_dism_width)
+                refined_height = min(refined_height, original_dism_height)
                 
-                # Extract the refined dism_area
+                # Extract the refined dism_area (top-left aligned with original 15% area)
                 dism_area_img = desc_zone_img[
                     refined_y : refined_y + refined_height,
                     refined_x : refined_x + refined_width
