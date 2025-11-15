@@ -2211,18 +2211,25 @@ def click_cards_and_extract_info_single_row(
                         previous_card_info = {}
 
                 if card_name:  # Only process if we got a card name
-                    # Aggregate counts for duplicate card names, also store dustable value (take max if multiple)
+                    # Store count with its X coordinate, description zone width, and dustable value
+                    # card_summary now maps card_name -> (list_of_(count, count_header_x, desc_zone_width), dustable_value)
+                    desc_zone_width = desc_zone_img.shape[1] if desc_zone_img is not None else 400  # fallback width
+                    
                     if card_name in card_summary:
-                        card_summary[card_name] = (card_summary[card_name][0] + count, max(card_summary[card_name][1], dustable_value))
+                        # Add the new (count, count_header_x, desc_zone_width) tuple to the existing list
+                        card_summary[card_name][0].append((count, count_header_x, desc_zone_width))
+                        # Update dustable value to max if new value is greater
+                        card_summary[card_name] = (card_summary[card_name][0], max(card_summary[card_name][1], dustable_value))
                         if Debug:
                             print(
-                                f"[click_cards_and_extract_info] Updated existing card '{card_name}': now {card_summary[card_name][0]} total, dustable: {card_summary[card_name][1]}"
+                                f"[click_cards_and_extract_info] Updated existing card '{card_name}': added count {count} at X={count_header_x}, dustable: {card_summary[card_name][1]}"
                             )
                     else:
-                        card_summary[card_name] = (count, dustable_value)
+                        # Create new entry with list containing one (count, count_header_x, desc_zone_width) tuple
+                        card_summary[card_name] = ([(count, count_header_x, desc_zone_width)], dustable_value)
                         if Debug:
                             print(
-                                f"[click_cards_and_extract_info] New card '{card_name}': {count}, dustable: {dustable_value}"
+                                f"[click_cards_and_extract_info] New card '{card_name}': {count} at X={count_header_x}, dustable: {dustable_value}"
                             )
                 else:
                     if Debug:
@@ -2269,11 +2276,11 @@ def click_cards_and_extract_info_single_row(
 
 def click_cards_and_extract_info_multi_row(
     win, max_rows: int = 8
-) -> List[Tuple[str, int, int]]:
+) -> List[Tuple[str, List[Tuple[int, int, int]], int]]:
     """
     EXPANDED: Process one full loop of 8 rows with specific scrolling pattern.
     Scrolling pattern between rows: [1, 2, 1, 2, 1, 1, 2] scrolls for transitions 1→2, 2→3, 3→4, 4→5, 5→6, 6→7, 7→8
-    Returns list of tuples (card_name, count, dustable_value) in encounter order.
+    Returns list of tuples (card_name, list_of_(count, count_header_x, desc_zone_width), dustable_value) in encounter order.
     """
     if Debug:
         print(
@@ -2298,7 +2305,7 @@ def click_cards_and_extract_info_multi_row(
         row_summary = click_cards_and_extract_info_single_row(win, row_number=row_num)
 
         # Add results from this row in encounter order
-        for card_name, (count, dustable_value) in row_summary.items():
+        for card_name, (count_list, dustable_value) in row_summary.items():
             # Skip empty card names
             if not card_name or card_name.strip() == "":
                 if Debug:
@@ -2307,23 +2314,25 @@ def click_cards_and_extract_info_multi_row(
 
             # Check if card already encountered
             found_existing = False
-            for i, (existing_name, existing_count, existing_dustable) in enumerate(cards_in_order):
+            for i, (existing_name, existing_count_list, existing_dustable) in enumerate(cards_in_order):
                 if existing_name == card_name:
-                    # Update existing entry - combine counts and take max dustable value
+                    # Update existing entry - add new count/coordinate pairs and take max dustable value
                     new_dustable = max(existing_dustable, dustable_value)
-                    cards_in_order[i] = (existing_name, existing_count + count, new_dustable)
+                    # Combine the count lists
+                    combined_count_list = existing_count_list + count_list
+                    cards_in_order[i] = (existing_name, combined_count_list, new_dustable)
                     if Debug:
                         print(
-                            f"[multi_row] Combined counts for '{card_name}': now {existing_count + count} total, dustable: {new_dustable}"
+                            f"[multi_row] Combined counts for '{card_name}': added {len(count_list)} new entries, total now {len(combined_count_list)} entries, dustable: {new_dustable}"
                         )
                     found_existing = True
                     break
 
             if not found_existing:
                 # Add new card in encounter order
-                cards_in_order.append((card_name, count, dustable_value))
+                cards_in_order.append((card_name, count_list, dustable_value))
                 if Debug:
-                    print(f"[multi_row] New card '{card_name}': {count}, dustable: {dustable_value}")
+                    print(f"[multi_row] New card '{card_name}': {len(count_list)} entries, dustable: {dustable_value}")
 
         if Debug:
             print(
@@ -2362,12 +2371,12 @@ def click_cards_and_extract_info_multi_row(
     return cards_in_order
 
 
-def process_full_collection_phases(win) -> List[Tuple[str, int, int]]:
+def process_full_collection_phases(win) -> List[Tuple[str, List[Tuple[int, int, int]], int]]:
     """
     NEW: Process the collection using the redesigned two-phase approach:
     - PHASE 1: Process first 4 rows without scrolling by clicking partition boxes
     - PHASE 2: Process next 8 rows using the bottom 5th row as reference with scrolling
-    Returns list of tuples (card_name, count, dustable_value) in encounter order.
+    Returns list of tuples (card_name, list_of_(count, count_header_x, desc_zone_width), dustable_value) in encounter order.
     """
     if Debug:
         print(
@@ -2448,7 +2457,7 @@ def process_full_collection_phases(win) -> List[Tuple[str, int, int]]:
         )
 
         # Add results from this row in encounter order
-        for card_name, (count, dustable_value) in row_summary.items():
+        for card_name, (count_list, dustable_value) in row_summary.items():
             # Skip empty card names
             if not card_name or card_name.strip() == "":
                 if Debug:
@@ -2457,23 +2466,25 @@ def process_full_collection_phases(win) -> List[Tuple[str, int, int]]:
 
             # Check if card already encountered
             found_existing = False
-            for i, (existing_name, existing_count, existing_dustable) in enumerate(cards_in_order):
+            for i, (existing_name, existing_count_list, existing_dustable) in enumerate(cards_in_order):
                 if existing_name == card_name:
-                    # Update existing entry - combine counts and take max dustable value
+                    # Update existing entry - add new count/coordinate pairs and take max dustable value
                     new_dustable = max(existing_dustable, dustable_value)
-                    cards_in_order[i] = (existing_name, existing_count + count, new_dustable)
+                    # Combine the count lists
+                    combined_count_list = existing_count_list + count_list
+                    cards_in_order[i] = (existing_name, combined_count_list, new_dustable)
                     if Debug:
                         print(
-                            f"[phase1] Combined counts for '{card_name}': now {existing_count + count} total, dustable: {new_dustable}"
+                            f"[phase1] Combined counts for '{card_name}': added {len(count_list)} new entries, total now {len(combined_count_list)} entries, dustable: {new_dustable}"
                         )
                     found_existing = True
                     break
 
             if not found_existing:
                 # Add new card in encounter order
-                cards_in_order.append((card_name, count, dustable_value))
+                cards_in_order.append((card_name, count_list, dustable_value))
                 if Debug:
-                    print(f"[phase1] New card '{card_name}': {count}, dustable: {dustable_value}")
+                    print(f"[phase1] New card '{card_name}': {len(count_list)} entries, dustable: {dustable_value}")
 
         if Debug:
             print(
@@ -2568,24 +2579,25 @@ def process_full_collection_phases(win) -> List[Tuple[str, int, int]]:
                 except EndOfCollection as e:
                     # merge partial summary from the helper and stop scanning further rows
                     if getattr(e, "partial", None):
-                        for cname, (cnt, dust_value) in e.partial.items():
+                        for cname, (count_list, dust_value) in e.partial.items():
                             # merge into cards_in_order preserving encounter order
                             found_existing = False
-                            for j, (existing_name, existing_count, existing_dustable) in enumerate(
+                            for j, (existing_name, existing_count_list, existing_dustable) in enumerate(
                                 cards_in_order
                             ):
                                 if existing_name == cname:
-                                    # Combine counts and take max dustable value
+                                    # Combine count lists and take max dustable value
                                     new_dustable = max(existing_dustable, dust_value)
+                                    combined_count_list = existing_count_list + count_list
                                     cards_in_order[j] = (
                                         existing_name,
-                                        existing_count + cnt,
+                                        combined_count_list,
                                         new_dustable
                                     )
                                     found_existing = True
                                     break
                             if not found_existing:
-                                cards_in_order.append((cname, cnt, dust_value))
+                                cards_in_order.append((cname, count_list, dust_value))
                     if Debug:
                         print(
                             "[process_full_collection_phases] End of collection detected during Phase 2 — stopping further rows."
@@ -2593,7 +2605,7 @@ def process_full_collection_phases(win) -> List[Tuple[str, int, int]]:
                     return cards_in_order  # stop completely
 
                 # Add results from this row in encounter order (normal merge path)
-                for card_name, (count, dustable_value) in row_summary.items():
+                for card_name, (count_list, dustable_value) in row_summary.items():
                     # Skip empty card names
                     if not card_name or card_name.strip() == "":
                         if Debug:
@@ -2602,23 +2614,25 @@ def process_full_collection_phases(win) -> List[Tuple[str, int, int]]:
 
                     # Check if card already encountered
                     found_existing = False
-                    for k, (existing_name, existing_count, existing_dustable) in enumerate(cards_in_order):
+                    for k, (existing_name, existing_count_list, existing_dustable) in enumerate(cards_in_order):
                         if existing_name == card_name:
-                            # Update existing entry - combine counts and take max dustable value
+                            # Update existing entry - add new count/coordinate pairs and take max dustable value
                             new_dustable = max(existing_dustable, dustable_value)
-                            cards_in_order[k] = (existing_name, existing_count + count, new_dustable)
+                            # Combine the count lists
+                            combined_count_list = existing_count_list + count_list
+                            cards_in_order[k] = (existing_name, combined_count_list, new_dustable)
                             if Debug:
                                 print(
-                                    f"[phase2] Combined counts for '{card_name}': now {existing_count + count} total, dustable: {new_dustable}"
+                                    f"[phase2] Combined counts for '{card_name}': added {len(count_list)} new entries, total now {len(combined_count_list)} entries, dustable: {new_dustable}"
                                 )
                             found_existing = True
                             break
 
                     if not found_existing:
                         # Add new card in encounter order
-                        cards_in_order.append((card_name, count, dustable_value))
+                        cards_in_order.append((card_name, count_list, dustable_value))
                         if Debug:
-                            print(f"[phase2] New card '{card_name}': {count}, dustable: {dustable_value}")
+                            print(f"[phase2] New card '{card_name}': {len(count_list)} entries, dustable: {dustable_value}")
 
                 if Debug:
                     print(
@@ -3364,11 +3378,12 @@ def find_and_extract_first_row_cards(win) -> bool:
 # ---------- Entrypoint ----------
 
 
-def print_card_summary(cards_in_order: List[Tuple[str, int, int]]):
+def print_card_summary(cards_in_order: List[Tuple[str, List[Tuple[int, int, int]], int]]):
     """
     CHANGE 3: Print final summary of all cards and counts.
     Handles duplicate card name aggregation and maintains encounter order.
-    Now also displays the Dustable value for each card.
+    Now displays the Dustable value for each card and card categories based on count header X position.
+    Uses description zone width to calculate percentages for card rarity classification.
     """
     if not cards_in_order:
         print("\n=== FINAL CARD SUMMARY ===")
@@ -3377,24 +3392,55 @@ def print_card_summary(cards_in_order: List[Tuple[str, int, int]]):
 
     print(f"\n=== FINAL CARD SUMMARY ===")
     print(f"Found {len(cards_in_order)} unique card(s) in encounter order:")
-    print("-" * 80)
+    print("-" * 100)
 
     total_cards = 0
     displayed_count = 0
 
-    for i, (card_name, count, dustable_value) in enumerate(cards_in_order):
+    # ANSI color codes
+    LIGHT_BLUE = '\033[94m' 
+    BASIC_COLOR = '\033[30m'
+    GLOSSY_COLOR = '\033[92m'
+    ROYAL_COLOR = '\033[93m' 
+    LIGHT_RED = '\033[91m'
+    RESET = '\033[0m'
+
+    for i, (card_name, count_list, dustable_value) in enumerate(cards_in_order):
         # Debug: Show all entries being processed
-        # print(f"[DEBUG] Entry {i+1}: '{card_name}' x{count} dustable:{dustable_value}")
+        # print(f"[DEBUG] Entry {i+1}: '{card_name}' {count_list} dustable:{dustable_value}")
 
         # Only display non-empty card names
         if card_name and card_name.strip():
             displayed_count += 1
-            print(f"{displayed_count}. {card_name}: x{count}, Dustable: {dustable_value}")
-            total_cards += count
+            
+            # Format the count entries with categories instead of raw coordinates
+            # Each count_list entry is now (count, x_coord, desc_zone_width)
+            count_strings = []
+            for count, x_coord, desc_zone_width in count_list:
+                category = determine_card_category(x_coord, desc_zone_width)
+                # Apply color based on category
+                if category == "Basic":
+                    colored_category = f"{BASIC_COLOR}{category}{RESET}"
+                elif category == "Glossy":
+                    colored_category = f"{GLOSSY_COLOR}{category}{RESET}"
+                elif category == "Royal":
+                    colored_category = f"{ROYAL_COLOR}{category}{RESET}"
+                else:
+                    # Fallback for any other categories
+                    colored_category = category
+                
+                count_strings.append(f"{colored_category} x{count}")
+            
+            counts_str = ", ".join(count_strings)
+            print(f"{displayed_count}. {card_name} |  {LIGHT_BLUE}COPIES{RESET}: {counts_str} |  {LIGHT_RED}DUSTABLE{RESET}: x{dustable_value}")
+            
+            # Calculate total count for this card
+            card_total = sum(count for count, _, _ in count_list)
+            total_cards += card_total
         else:
             print(f"[DEBUG] Skipped empty card name at position {i + 1}")
 
-    print("-" * 80)
+    print("-" * 100)
     # print(f"Total unique cards displayed: {displayed_count}")
     print(f"Total unique cards in list: {len(cards_in_order)}")
     print(f"Total card count: {total_cards}")
@@ -3404,6 +3450,28 @@ def print_card_summary(cards_in_order: List[Tuple[str, int, int]]):
         print(
             f"[DEBUG] Mismatch detected: {len(cards_in_order) - displayed_count} cards have empty names"
         )
+
+
+def determine_card_category(x_coord: int, desc_zone_width: float) -> str:
+    """
+    Determine card category based on count header X coordinate and description zone width.
+    Calculates thresholds using the specified percentages: 73.5%, 81.1%, 88.4%
+    """
+    # Calculate the percentage thresholds based on the description zone width
+    basic_threshold = 0.735 * desc_zone_width
+    glossy_threshold = 0.811 * desc_zone_width
+    royal_threshold = 0.884 * desc_zone_width
+    
+    # Find which threshold the x_coord is closest to
+    distances = [
+        (abs(x_coord - basic_threshold), "Basic"),
+        (abs(x_coord - glossy_threshold), "Glossy"),
+        (abs(x_coord - royal_threshold), "Royal")
+    ]
+    
+    # Return the category corresponding to the closest threshold
+    closest_distance, closest_category = min(distances, key=lambda item: item[0])
+    return closest_category
 
 
 def main():
