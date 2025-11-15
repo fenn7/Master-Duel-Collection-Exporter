@@ -17,9 +17,14 @@ Test locally, do not upload screenshots without consent.
 import time
 import json
 import os
+import signal
+import sys
 from pathlib import Path
 from collections import defaultdict
 from dataclasses import dataclass
+
+# Global variable to track partially processed cards for interruption handling
+interruptible_cards = []
 from typing import List, Tuple, Optional, Dict, Any
 
 import cv2
@@ -83,6 +88,7 @@ USE_SSIM = True  # use SSIM if available for more robust equality checks
 
 # Set to True to enable debug output and save debug images
 Debug = True
+
 
 # Data containers
 @dataclass
@@ -759,77 +765,82 @@ def analyze_dism_area(dism_area_img: np.ndarray) -> int:
     """
     if dism_area_img is None or dism_area_img.size == 0:
         return 0
-    
+
     h, w = dism_area_img.shape[:2]
-    
+
     if Debug:
         print(f"[analyze_dism_area] Processing dism_area of size {w}x{h}")
-    
+
     try:
         # Convert to grayscale for processing
         dism_gray = cv2.cvtColor(dism_area_img, cv2.COLOR_BGR2GRAY)
-        
+
         # Resize to improve OCR accuracy
         dism_gray = cv2.resize(
             dism_gray,
             (dism_gray.shape[1] * 3, dism_gray.shape[0] * 3),
             interpolation=cv2.INTER_CUBIC,
         )
-        
+
         # Apply multiple thresholding approaches for better digit detection
-        _, dism_thresh1 = cv2.threshold(
-            dism_gray, 120, 255, cv2.THRESH_BINARY_INV
-        )
+        _, dism_thresh1 = cv2.threshold(dism_gray, 120, 255, cv2.THRESH_BINARY_INV)
         _, dism_thresh2 = cv2.threshold(
             dism_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
         )
-        
+
         # Configure OCR for digits only
         cfg_dism = r"--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789"
-        
+
         # Try both threshold approaches
         for thresh_img in [dism_thresh1, dism_thresh2]:
             try:
                 txt = pytesseract.image_to_string(thresh_img, config=cfg_dism).strip()
-                
+
                 if Debug:
                     print(f"[analyze_dism_area] OCR result: '{txt}'")
-                
+
                 # Look for digits in the text
                 if txt.isdigit():
                     dustable_value = int(txt)
                     if Debug:
-                        print(f"[analyze_dism_area] Found clear digit: {dustable_value}")
+                        print(
+                            f"[analyze_dism_area] Found clear digit: {dustable_value}"
+                        )
                     return dustable_value
             except Exception as e:
                 if Debug:
                     print(f"[analyze_dism_area] OCR attempt failed: {e}")
                 continue
-        
+
         # If direct OCR didn't work, try to find the largest numeric sequence
         import re
+
         for thresh_img in [dism_thresh1, dism_thresh2]:
             try:
-                txt = pytesseract.image_to_string(thresh_img, config=r"--oem 3 --psm 7").strip()
-                
+                txt = pytesseract.image_to_string(
+                    thresh_img, config=r"--oem 3 --psm 7"
+                ).strip()
+
                 # Find all numeric sequences
-                numbers = re.findall(r'\d+', txt)
+                numbers = re.findall(r"\d+", txt)
                 if numbers:
                     # Return the largest number found
                     dustable_values = [int(num) for num in numbers]
                     dustable_value = max(dustable_values)
                     if Debug:
-                        print(f"[analyze_dism_area] Found numbers {numbers}, using max: {dustable_value}")
+                        print(
+                            f"[analyze_dism_area] Found numbers {numbers}, using max: {dustable_value}"
+                        )
                     return dustable_value
             except Exception as e:
                 if Debug:
                     print(f"[analyze_dism_area] Fallback OCR attempt failed: {e}")
                 continue
-    
+
     except Exception as e:
         if Debug:
             print(f"[analyze_dism_area] Error processing dism_area: {e}")
-    
+
     # Default to 0 if no clear value is found
     return 0
 
@@ -2113,42 +2124,48 @@ def click_cards_and_extract_info_single_row(
 
                 # Extract dism_area (first get 15% of desc_XX area, then refine based on that 15% area's dimensions)
                 h_desc, w_desc = desc_zone_img.shape[:2]
-                
+
                 # First, get the 15% of description zone, bottom-right corner aligned
                 original_dism_width = int(w_desc * 0.15)
                 original_dism_height = int(h_desc * 0.15)
-                
+
                 # Calculate bottom-right aligned coordinates for the original 15% area
                 original_dism_x = w_desc - original_dism_width
                 original_dism_y = h_desc - original_dism_height
-                
+
                 # Ensure we don't go outside bounds (shouldn't happen but for safety)
                 original_dism_x = max(0, original_dism_x)
                 original_dism_y = max(0, original_dism_y)
                 original_dism_width = min(original_dism_width, w_desc - original_dism_x)
-                original_dism_height = min(original_dism_height, h_desc - original_dism_y)
-                
+                original_dism_height = min(
+                    original_dism_height, h_desc - original_dism_y
+                )
+
                 # Now, from the 15% area, calculate the refined area:
                 # Remove 33% of the HEIGHT of the 15% area from its WIDTH (from right edge)
                 # Remove 12.5% of the HEIGHT of the 15% area from its HEIGHT (from bottom edge)
-                reduction_width = int(original_dism_height * 0.33)  # 33% of the 15% area's HEIGHT
-                reduction_height = int(original_dism_height * 0.125)  # 12.5% of the 15% area's HEIGHT
-                
+                reduction_width = int(
+                    original_dism_height * 0.33
+                )  # 33% of the 15% area's HEIGHT
+                reduction_height = int(
+                    original_dism_height * 0.125
+                )  # 12.5% of the 15% area's HEIGHT
+
                 refined_width = original_dism_width - reduction_width
                 refined_height = original_dism_height - reduction_height
-                
+
                 # Align the refined area with the top-left corner of the 15% area
                 refined_x = original_dism_x  # Same top-left x coordinate
                 refined_y = original_dism_y  # Same top-left y coordinate
-                
+
                 # Ensure we don't go outside original bounds
                 refined_width = min(refined_width, original_dism_width)
                 refined_height = min(refined_height, original_dism_height)
-                
+
                 # Extract the refined dism_area (top-left aligned with original 15% area)
                 dism_area_img = desc_zone_img[
                     refined_y : refined_y + refined_height,
-                    refined_x : refined_x + refined_width
+                    refined_x : refined_x + refined_width,
                 ].copy()
 
                 # Save dism_area screenshot in the appropriate directory
@@ -2166,7 +2183,7 @@ def click_cards_and_extract_info_single_row(
                     row_number=row_number,
                     return_count_header=True,
                 )
-                
+
                 # Analyze dism_area for "Dustable" value using digit analysis similar to count analysis
                 dustable_value = analyze_dism_area(dism_area_img)
 
@@ -2213,20 +2230,30 @@ def click_cards_and_extract_info_single_row(
                 if card_name:  # Only process if we got a card name
                     # Store count with its X coordinate, description zone width, and dustable value
                     # card_summary now maps card_name -> (list_of_(count, count_header_x, desc_zone_width), dustable_value)
-                    desc_zone_width = desc_zone_img.shape[1] if desc_zone_img is not None else 400  # fallback width
-                    
+                    desc_zone_width = (
+                        desc_zone_img.shape[1] if desc_zone_img is not None else 400
+                    )  # fallback width
+
                     if card_name in card_summary:
                         # Add the new (count, count_header_x, desc_zone_width) tuple to the existing list
-                        card_summary[card_name][0].append((count, count_header_x, desc_zone_width))
+                        card_summary[card_name][0].append(
+                            (count, count_header_x, desc_zone_width)
+                        )
                         # Update dustable value to max if new value is greater
-                        card_summary[card_name] = (card_summary[card_name][0], max(card_summary[card_name][1], dustable_value))
+                        card_summary[card_name] = (
+                            card_summary[card_name][0],
+                            max(card_summary[card_name][1], dustable_value),
+                        )
                         if Debug:
                             print(
                                 f"[click_cards_and_extract_info] Updated existing card '{card_name}': added count {count} at X={count_header_x}, dustable: {card_summary[card_name][1]}"
                             )
                     else:
                         # Create new entry with list containing one (count, count_header_x, desc_zone_width) tuple
-                        card_summary[card_name] = ([(count, count_header_x, desc_zone_width)], dustable_value)
+                        card_summary[card_name] = (
+                            [(count, count_header_x, desc_zone_width)],
+                            dustable_value,
+                        )
                         if Debug:
                             print(
                                 f"[click_cards_and_extract_info] New card '{card_name}': {count} at X={count_header_x}, dustable: {dustable_value}"
@@ -2314,13 +2341,19 @@ def click_cards_and_extract_info_multi_row(
 
             # Check if card already encountered
             found_existing = False
-            for i, (existing_name, existing_count_list, existing_dustable) in enumerate(cards_in_order):
+            for i, (existing_name, existing_count_list, existing_dustable) in enumerate(
+                cards_in_order
+            ):
                 if existing_name == card_name:
                     # Update existing entry - add new count/coordinate pairs and take max dustable value
                     new_dustable = max(existing_dustable, dustable_value)
                     # Combine the count lists
                     combined_count_list = existing_count_list + count_list
-                    cards_in_order[i] = (existing_name, combined_count_list, new_dustable)
+                    cards_in_order[i] = (
+                        existing_name,
+                        combined_count_list,
+                        new_dustable,
+                    )
                     if Debug:
                         print(
                             f"[multi_row] Combined counts for '{card_name}': added {len(count_list)} new entries, total now {len(combined_count_list)} entries, dustable: {new_dustable}"
@@ -2332,7 +2365,9 @@ def click_cards_and_extract_info_multi_row(
                 # Add new card in encounter order
                 cards_in_order.append((card_name, count_list, dustable_value))
                 if Debug:
-                    print(f"[multi_row] New card '{card_name}': {len(count_list)} entries, dustable: {dustable_value}")
+                    print(
+                        f"[multi_row] New card '{card_name}': {len(count_list)} entries, dustable: {dustable_value}"
+                    )
 
         if Debug:
             print(
@@ -2371,7 +2406,9 @@ def click_cards_and_extract_info_multi_row(
     return cards_in_order
 
 
-def process_full_collection_phases(win) -> List[Tuple[str, List[Tuple[int, int, int]], int]]:
+def process_full_collection_phases(
+    win,
+) -> List[Tuple[str, List[Tuple[int, int, int]], int]]:
     """
     NEW: Process the collection using the redesigned two-phase approach:
     - PHASE 1: Process first 4 rows without scrolling by clicking partition boxes
@@ -2466,13 +2503,19 @@ def process_full_collection_phases(win) -> List[Tuple[str, List[Tuple[int, int, 
 
             # Check if card already encountered
             found_existing = False
-            for i, (existing_name, existing_count_list, existing_dustable) in enumerate(cards_in_order):
+            for i, (existing_name, existing_count_list, existing_dustable) in enumerate(
+                cards_in_order
+            ):
                 if existing_name == card_name:
                     # Update existing entry - add new count/coordinate pairs and take max dustable value
                     new_dustable = max(existing_dustable, dustable_value)
                     # Combine the count lists
                     combined_count_list = existing_count_list + count_list
-                    cards_in_order[i] = (existing_name, combined_count_list, new_dustable)
+                    cards_in_order[i] = (
+                        existing_name,
+                        combined_count_list,
+                        new_dustable,
+                    )
                     if Debug:
                         print(
                             f"[phase1] Combined counts for '{card_name}': added {len(count_list)} new entries, total now {len(combined_count_list)} entries, dustable: {new_dustable}"
@@ -2484,7 +2527,12 @@ def process_full_collection_phases(win) -> List[Tuple[str, List[Tuple[int, int, 
                 # Add new card in encounter order
                 cards_in_order.append((card_name, count_list, dustable_value))
                 if Debug:
-                    print(f"[phase1] New card '{card_name}': {len(count_list)} entries, dustable: {dustable_value}")
+                    print(
+                        f"[phase1] New card '{card_name}': {len(count_list)} entries, dustable: {dustable_value}"
+                    )
+
+        # Update interruptible cards for signal handler
+        update_interruptible_cards(cards_in_order)
 
         if Debug:
             print(
@@ -2582,22 +2630,28 @@ def process_full_collection_phases(win) -> List[Tuple[str, List[Tuple[int, int, 
                         for cname, (count_list, dust_value) in e.partial.items():
                             # merge into cards_in_order preserving encounter order
                             found_existing = False
-                            for j, (existing_name, existing_count_list, existing_dustable) in enumerate(
-                                cards_in_order
-                            ):
+                            for j, (
+                                existing_name,
+                                existing_count_list,
+                                existing_dustable,
+                            ) in enumerate(cards_in_order):
                                 if existing_name == cname:
                                     # Combine count lists and take max dustable value
                                     new_dustable = max(existing_dustable, dust_value)
-                                    combined_count_list = existing_count_list + count_list
+                                    combined_count_list = (
+                                        existing_count_list + count_list
+                                    )
                                     cards_in_order[j] = (
                                         existing_name,
                                         combined_count_list,
-                                        new_dustable
+                                        new_dustable,
                                     )
                                     found_existing = True
                                     break
                             if not found_existing:
                                 cards_in_order.append((cname, count_list, dust_value))
+                    # Update interruptible cards before returning
+                    update_interruptible_cards(cards_in_order)
                     if Debug:
                         print(
                             "[process_full_collection_phases] End of collection detected during Phase 2 — stopping further rows."
@@ -2614,13 +2668,21 @@ def process_full_collection_phases(win) -> List[Tuple[str, List[Tuple[int, int, 
 
                     # Check if card already encountered
                     found_existing = False
-                    for k, (existing_name, existing_count_list, existing_dustable) in enumerate(cards_in_order):
+                    for k, (
+                        existing_name,
+                        existing_count_list,
+                        existing_dustable,
+                    ) in enumerate(cards_in_order):
                         if existing_name == card_name:
                             # Update existing entry - add new count/coordinate pairs and take max dustable value
                             new_dustable = max(existing_dustable, dustable_value)
                             # Combine the count lists
                             combined_count_list = existing_count_list + count_list
-                            cards_in_order[k] = (existing_name, combined_count_list, new_dustable)
+                            cards_in_order[k] = (
+                                existing_name,
+                                combined_count_list,
+                                new_dustable,
+                            )
                             if Debug:
                                 print(
                                     f"[phase2] Combined counts for '{card_name}': added {len(count_list)} new entries, total now {len(combined_count_list)} entries, dustable: {new_dustable}"
@@ -2632,7 +2694,12 @@ def process_full_collection_phases(win) -> List[Tuple[str, List[Tuple[int, int, 
                         # Add new card in encounter order
                         cards_in_order.append((card_name, count_list, dustable_value))
                         if Debug:
-                            print(f"[phase2] New card '{card_name}': {len(count_list)} entries, dustable: {dustable_value}")
+                            print(
+                                f"[phase2] New card '{card_name}': {len(count_list)} entries, dustable: {dustable_value}"
+                            )
+
+                # Update interruptible cards for signal handler
+                update_interruptible_cards(cards_in_order)
 
                 if Debug:
                     print(
@@ -3378,7 +3445,9 @@ def find_and_extract_first_row_cards(win) -> bool:
 # ---------- Entrypoint ----------
 
 
-def print_card_summary(cards_in_order: List[Tuple[str, List[Tuple[int, int, int]], int]]):
+def print_card_summary(
+    cards_in_order: List[Tuple[str, List[Tuple[int, int, int]], int]],
+):
     """
     CHANGE 3: Print final summary of all cards and counts.
     Handles duplicate card name aggregation and maintains encounter order.
@@ -3398,12 +3467,13 @@ def print_card_summary(cards_in_order: List[Tuple[str, List[Tuple[int, int, int]
     displayed_count = 0
 
     # ANSI color codes
-    LIGHT_BLUE = '\033[94m' 
-    BASIC_COLOR = '\033[30m'
-    GLOSSY_COLOR = '\033[92m'
-    ROYAL_COLOR = '\033[93m' 
-    LIGHT_RED = '\033[91m'
-    RESET = '\033[0m'
+    BOLD_WHITE = "\033[1;97m"  # Bold white for card names
+    LIGHT_BLUE = "\033[94m"
+    BASIC_COLOR = "\033[30m"
+    GLOSSY_COLOR = "\033[92m"
+    ROYAL_COLOR = "\033[93m"
+    LIGHT_RED = "\033[91m"
+    RESET = "\033[0m"
 
     for i, (card_name, count_list, dustable_value) in enumerate(cards_in_order):
         # Debug: Show all entries being processed
@@ -3412,7 +3482,7 @@ def print_card_summary(cards_in_order: List[Tuple[str, List[Tuple[int, int, int]
         # Only display non-empty card names
         if card_name and card_name.strip():
             displayed_count += 1
-            
+
             # Format the count entries with categories instead of raw coordinates
             # Each count_list entry is now (count, x_coord, desc_zone_width)
             count_strings = []
@@ -3428,12 +3498,14 @@ def print_card_summary(cards_in_order: List[Tuple[str, List[Tuple[int, int, int]
                 else:
                     # Fallback for any other categories
                     colored_category = category
-                
+
                 count_strings.append(f"{colored_category} x{count}")
-            
+
             counts_str = ", ".join(count_strings)
-            print(f"{displayed_count}. {card_name} |  {LIGHT_BLUE}COPIES{RESET}: {counts_str} |  {LIGHT_RED}DUSTABLE{RESET}: x{dustable_value}")
-            
+            print(
+                f"{displayed_count}. {BOLD_WHITE}{card_name}{RESET} |  {LIGHT_BLUE}COPIES{RESET}: {counts_str} |  {LIGHT_RED}DUSTABLE{RESET}: x{dustable_value}"
+            )
+
             # Calculate total count for this card
             card_total = sum(count for count, _, _ in count_list)
             total_cards += card_total
@@ -3461,56 +3533,26 @@ def determine_card_category(x_coord: int, desc_zone_width: float) -> str:
     basic_threshold = 0.735 * desc_zone_width
     glossy_threshold = 0.811 * desc_zone_width
     royal_threshold = 0.884 * desc_zone_width
-    
+
     # Find which threshold the x_coord is closest to
     distances = [
         (abs(x_coord - basic_threshold), "Basic"),
         (abs(x_coord - glossy_threshold), "Glossy"),
-        (abs(x_coord - royal_threshold), "Royal")
+        (abs(x_coord - royal_threshold), "Royal"),
     ]
-    
+
     # Return the category corresponding to the closest threshold
     closest_distance, closest_category = min(distances, key=lambda item: item[0])
     return closest_category
 
 
-def main():
-    """
-    Modified main function to use the new card clicking and extraction functionality.
-    CHANGE 2 & 3: Implements the complete redesigned workflow with two phases.
-    """
-    print("Starting Master Duel Collection Exporter...")
-    print(
-        "This will process the first 12 rows of cards using the redesigned two-phase approach."
-    )
-    print("- Phase 1: Process first 4 rows without scrolling")
-    print("- Phase 2: Process next 8 rows with scrolling using preset pattern")
-
-    # Find game window
-    win = find_game_window()
-    if not win:
-        print(
-            "Could not find Master Duel window. Please ensure the game is open and visible."
-        )
-        return
-
-    print("Game window found. Starting card detection and clicking process...")
-
-    # Use the new redesigned two-phase approach to process all 12 rows
-    cards_in_order = process_full_collection_phases(win)
-
-    # Print final summary with aggregated counts
-    print_card_summary(cards_in_order)
-
-    print("\n=== Process Complete ===")
-    print("The enhanced collection scanner has finished processing all 12 rows.")
-    print("Check the output above for the complete card summary with counts.")
-    print(
-        "Images were saved to test_identifier/phase1/ and test_identifier/phase2/row_XX/ directories."
-    )
-
-    # Cleanup temporary files
-    cleanup_temp_files()
+import time
+import json
+import os
+import signal
+import sys
+from pathlib import Path
+from collections import defaultdict
 
 
 def cleanup_temp_files():
@@ -4331,6 +4373,101 @@ def matcher_loop_faiss(
         results.append(entry)
 
     return results
+
+
+def signal_handler(sig, frame, cards_in_order_ref=None):
+    """
+    Handle interruption signals (like Ctrl+C) and print current card summary.
+    """
+    print("\n\n=== SCRIPT INTERRUPTED ===")
+    print("Processing was cancelled. Here is the summary of cards analyzed so far:")
+    print("-" * 50)
+
+    # Use the global interruptible_cards if available, otherwise use the reference
+    if cards_in_order_ref and cards_in_order_ref[0]:
+        print_card_summary(cards_in_order_ref[0])
+    elif interruptible_cards:
+        print_card_summary(interruptible_cards)
+    else:
+        print("No cards were analyzed before interruption.")
+
+    print("\n=== PROCESSING STOPPED ===")
+    sys.exit(0)
+
+
+def update_interruptible_cards(cards_in_order):
+    """
+    Update the global interruptible cards list with current state.
+    """
+    global interruptible_cards
+    interruptible_cards = cards_in_order[:]
+
+
+def main():
+    """
+    Main function to use the new card clicking and extraction functionality.
+    Implements the complete redesigned workflow with two phases.
+    """
+    print("Starting Master Duel Collection Exporter...")
+    print(
+        "This will process the first 12 rows of cards using the redesigned two-phase approach."
+    )
+    print("- Phase 1: Process first 4 rows without scrolling")
+    print("- Phase 2: Process next 8 rows with scrolling using preset pattern")
+    print("Press Ctrl+C at any time to stop and see current results.")
+
+    # Setup signal handler for graceful interruption
+    cards_container = [[]]  # Use a mutable container to pass to signal handler
+    signal.signal(
+        signal.SIGINT, lambda sig, frame: signal_handler(sig, frame, cards_container)
+    )
+
+    # Find game window
+    win = find_game_window()
+    if not win:
+        print(
+            "Could not find Master Duel window. Please ensure the game is open and visible."
+        )
+        return
+
+    print("Game window found. Starting card detection and clicking process...")
+
+    try:
+        # Use the new redesigned two-phase approach to process all 12 rows
+        cards_in_order = process_full_collection_phases(win)
+
+        # Store in container for signal handler access (in case of interruption during print below)
+        cards_container[0] = cards_in_order
+
+        # Print final summary with aggregated counts
+        print_card_summary(cards_in_order)
+
+        print("\n=== Process Complete ===")
+        print("The enhanced collection scanner has finished processing all 12 rows.")
+        print("Check the output above for the complete card summary with counts.")
+        print(
+            "Images were saved to test_identifier/phase1/ and test_identifier/phase2/row_XX/ directories."
+        )
+
+    except KeyboardInterrupt:
+        # This handles the case where the interruption happens during process_full_collection_phases
+        print("\n\n=== SCRIPT INTERRUPTED ===")
+        print("Processing was cancelled. Here is the summary of cards analyzed so far:")
+        print("-" * 50)
+        # Try multiple sources for card data
+        if cards_container[0]:  # If we have collected some cards in the container
+            print_card_summary(cards_container[0])
+        elif (
+            interruptible_cards
+        ):  # If we have cards in the global interruptible container
+            print_card_summary(interruptible_cards)
+        else:
+            print("No cards were analyzed before interruption.")
+        print("\n=== PROCESSING STOPPED ===")
+        return
+
+    # Cleanup temporary files
+    cleanup_temp_files()
 
 
 if __name__ == "__main__":
