@@ -3454,6 +3454,11 @@ def print_card_summary(
     Now displays the Dustable value for each card and card categories based on count header X position.
     Uses description zone width to calculate percentages for card rarity classification.
     """
+    # Filter out cards with empty names
+    cards_in_order = [
+        (name, cl, dv) for name, cl, dv in cards_in_order if name and name.strip()
+    ]
+
     if not cards_in_order:
         print("\n=== FINAL CARD SUMMARY ===")
         print("No cards were successfully processed.")
@@ -4443,7 +4448,7 @@ def main():
         print_card_summary(cards_in_order)
 
         print("\n=== Process Complete ===")
-        print("The enhanced collection scanner has finished processing all 12 rows.")
+        print("The enhanced collection scanner has finished processing all rows.")
         print("Check the output above for the complete card summary with counts.")
         print(
             "Images were saved to test_identifier/phase1/ and test_identifier/phase2/row_XX/ directories."
