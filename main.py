@@ -3557,10 +3557,15 @@ def print_card_summary(
     and maintains encounter order. Now displays the Dustable value for each card and card finish
     categories based on count header X position. Uses description zone width to calculate percentages
     for card finish classification. Also shows the card rarity with colored output.
-
-    Minimal changes made: rarity is printed JUST ONCE (inside square brackets) and the brackets
-    themselves are colored/bolded to match the rarity. No other formatting changed.
+    Additionally checks each card against the canonical database to get the canonical name and legacy pack status.
     """
+    # Import card name matcher functionality
+    try:
+        from card_name_matcher import get_canonical_name_and_legacy_status
+        use_canonical_names = True
+    except ImportError:
+        print("[WARNING] Could not import card_name_matcher. Using original card names.")
+        use_canonical_names = False
     # Filter out cards with empty names
     cards_in_order = [
         (name, cl, dv) for name, cl, dv in cards_in_order if name and name.strip()
@@ -3572,7 +3577,7 @@ def print_card_summary(
 
     print(f"\n=== FINAL CARD SUMMARY ===")
     print(f"Found {len(cards_in_order)} unique card(s) in encounter order:")
-    print("-" * 120)
+    print("-" * 140)
 
     total_cards = 0
     displayed_count = 0
@@ -3644,17 +3649,30 @@ def print_card_summary(
             # Fallback: bold the rarity and brackets
             colored_rarity_with_brackets = f"{RARITY_BOLD}[{display_rarity}]{RESET}"
 
-        # Print final line. Only change from your original format is using colored_rarity_with_brackets
+        # Get canonical name and legacy status if enabled
+        if use_canonical_names:
+            canonical_name, is_legacy_pack = get_canonical_name_and_legacy_status(card_name)
+            if not canonical_name or canonical_name.strip() == "":
+                # Fallback to original name if canonical name not found
+                canonical_name = card_name
+            display_name = canonical_name
+            legacy_status = "YES" if is_legacy_pack else "NO"
+        else:
+            display_name = card_name
+            legacy_status = "N/A"
+
+        # Print final line with canonical name and legacy status
         print(
-            f"{displayed_count}. {colored_rarity_with_brackets} {BOLD_WHITE}{card_name}{RESET} | "
-            f"{LIGHT_BLUE}COPIES{RESET}: {counts_str} | {LIGHT_RED}DUSTABLE{RESET}: x{dustable_value}"
+            f"{displayed_count}. {colored_rarity_with_brackets} {BOLD_WHITE}{display_name}{RESET} | "
+            f"{LIGHT_BLUE}COPIES{RESET}: {counts_str} | {LIGHT_RED}DUSTABLE{RESET}: x{dustable_value} | "
+            f"{'LEGACY?':} {legacy_status}"
         )
 
         # Calculate total count for this card
         card_total = sum(count for count, _, _, _ in count_list)
         total_cards += card_total
 
-    print("-" * 120)
+    print("-" * 140)
     print(f"Total unique cards in list: {len(cards_in_order)}")
     print(f"Total card count: {total_cards}")
     if displayed_count != len(cards_in_order):

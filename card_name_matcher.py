@@ -116,6 +116,10 @@ class CanonicalMatcher:
 
 
 def match_card_name(query: str) -> Tuple[str, bool]:
+    """
+    Match a card name to its canonical form and check if it's in the Legacy Pack.
+    Returns (canonical_name, is_legacy_pack)
+    """
     cards_map = fetch_or_load_cards()
     canonical_names = list(cards_map.keys())
     if not canonical_names:
@@ -127,6 +131,14 @@ def match_card_name(query: str) -> Tuple[str, bool]:
     legacy_cache = load_legacy_cache()
     in_legacy = is_in_legacy_pack_masterduelmeta(best_name, legacy_cache)
     return best_name, in_legacy
+
+
+def get_canonical_name_and_legacy_status(card_name: str) -> Tuple[str, bool]:
+    """
+    Given a card name, return its canonical name and legacy pack status.
+    This function is designed for use in main.py's print_card_summary function.
+    """
+    return match_card_name(card_name)
 
 
 # ---------------------------------------------------------------------
@@ -167,45 +179,21 @@ def is_in_legacy_pack_masterduelmeta(card_name: str, cache: Dict) -> bool:
     url_encoded = quote(card_name)
     url = f"https://www.masterduelmeta.com/cards/{url_encoded}"
 
-    # Print attempted URL for monitoring
-    if Debug:
-        print(f"Attempting MasterDuelMeta URL: {url}")
-
     try:
         r = requests.get(
             url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True
         )
     except Exception as e:
-        if Debug:
-            print(f"Network error for URL {url}: {e}")
         # Do not cache on failure
         return False
 
-    # Print response status and final URL after redirects
-    try:
-        status = r.status_code
-        final_url = getattr(r, "url", url)
-        if Debug:
-            print(f"HTTP {status} - Resolved URL: {final_url}")
-            # Print a short snippet of the body for debugging if non-200 (first 300 chars)
-            if status != 200:
-                snippet = (r.text or "")[:300].replace("\n", " ").replace("\r", " ")
-                print(f"Response body snippet (first 300 chars): {snippet!s}")
-    except Exception as e:
-        if Debug:
-            print(f"Failed to inspect response: {e}")
-
     if r.status_code == 404:
-        if Debug:
-            print(f"404 Not Found for URL: {url}")
         # Do not cache on failure
         return False
 
     try:
         r.raise_for_status()
     except Exception as e:
-        if Debug:
-            print(f"HTTP error {r.status_code} for URL: {url} - {e}")
         # Do not cache on failure
         return False
 
@@ -269,7 +257,6 @@ def main():
     legacy_cache = load_legacy_cache()
     in_legacy = is_in_legacy_pack_masterduelmeta(best_name, legacy_cache)
     print(f"[legacy] In Legacy Pack? {in_legacy}")
-
 
 if __name__ == "__main__":
     main()
