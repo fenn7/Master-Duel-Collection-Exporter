@@ -778,7 +778,7 @@ def analyze_dism_area(dism_area_img: np.ndarray) -> int:
         # Resize to improve OCR accuracy
         dism_gray = cv2.resize(
             dism_gray,
-            (dism_gray.shape[1] * 3, dism_gray.shape[0] * 3),
+            (dism_gray.shape[1] * 3, dism_area_img.shape[0] * 3),
             interpolation=cv2.INTER_CUBIC,
         )
 
@@ -843,6 +843,107 @@ def analyze_dism_area(dism_area_img: np.ndarray) -> int:
 
     # Default to 0 if no clear value is found
     return 0
+
+
+def analyze_card_rarity(description_zone_img: np.ndarray, card_number: int = 0, row_number: int = 1) -> str:
+    """
+    Analyze the card rarity by examining the color of a specific pixel in the description zone.
+
+    1) Find the area defined by 28% of the height and 37.5% of the width of description_zone.
+       The top-left corner of this area is the same as the top-left corner of the description_zone.
+    2) Find the sub-area defined by 20% of the height and width of this area,
+       but the BOTTOM-RIGHT corner of this will match with the reduced area found in step 1.
+    3) Grab the color of the 1 pixel in the bottom-right corner and analyze its color.
+    4) Assign it a rarity based on the most similar color as follows (RGB):
+       (153, 153, 155) -> N ; (0, 127, 251) -> R ; (253, 159, 0) -> SR; (60, 241, 251) -> UR
+    5) All rarities should be 2 spaces, insert a whitespace after the N and R to allow this.
+    """
+    if description_zone_img is None or description_zone_img.size == 0:
+        return "N "  # Default to N if no image is provided
+
+    h, w = description_zone_img.shape[:2]
+
+    # Step 1: Calculate the main area (28% height, 37.5% width)
+    main_area_h = int(h * 0.28)
+    main_area_w = int(w * 0.375)
+
+    # The top-left corner is the same as the description zone
+    main_area_x = 0
+    main_area_y = 0
+
+    # Step 2: Calculate the sub-area (20% of the main area's dimensions)
+    sub_area_h = int(main_area_h * 0.20)
+    sub_area_w = int(main_area_w * 0.20)
+
+    # The bottom-right corner of the sub-area matches the bottom-right of the main area
+    sub_area_x = main_area_x + main_area_w - sub_area_w
+    sub_area_y = main_area_y + main_area_h - sub_area_h
+
+    # Ensure we don't go outside the image bounds
+    sub_area_x = max(0, min(sub_area_x, w - 1))
+    sub_area_y = max(0, min(sub_area_y, h - 1))
+    sub_area_w = min(sub_area_w, w - sub_area_x)
+    sub_area_h = min(sub_area_h, h - sub_area_y)
+
+    # Extract the sub-area
+    sub_area_img = description_zone_img[
+        sub_area_y : sub_area_y + sub_area_h,
+        sub_area_x : sub_area_x + sub_area_w
+    ].copy()
+
+    # Save the sub-area for debugging as rare_XX (as per requirements)
+    if card_number > 0:
+        # Determine the appropriate directory based on row number
+        if row_number <= 4:
+            # Phase 1: rows 1-4 - need subdirectories for each row within phase1
+            rarity_path = Path(
+                f"test_identifier/phase1/row_{row_number:02d}/rare_{card_number:02d}.png"
+            )
+        else:
+            # Phase 2: rows 5-12 organized in row_XX subdirectories under phase2
+            rarity_path = Path(
+                f"test_identifier/phase2/row_{row_number:02d}/rare_{card_number:02d}.png"
+            )
+        if Debug:
+            rarity_path.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(rarity_path), sub_area_img)
+            print(
+                f"[analyze_card_rarity] Saved rarity sub-area for card {card_number} as {rarity_path}"
+            )
+
+    # Get the bottom-right pixel color
+    if sub_area_h > 0 and sub_area_w > 0:
+        bottom_right_pixel = sub_area_img[sub_area_h - 1, sub_area_w - 1]
+        # Keep as BGR (OpenCV format) for comparison since the target colors were specified in RGB
+        # So we need to convert the RGB targets to BGR for comparison
+        pixel_bgr = [int(bottom_right_pixel[0]), int(bottom_right_pixel[1]), int(bottom_right_pixel[2])]
+    else:
+        # Default to a neutral color if the sub-area is invalid
+        pixel_bgr = [128, 128, 128]  # Gray as default
+
+    # Define the target colors and their rarities (in BGR format to match OpenCV)
+    target_colors = {
+        (155, 153, 153): "N ",  # Normal - RGB(153, 153, 155) -> BGR(155, 153, 153) (with space)
+        (251, 127, 0): "R ",    # Rare - RGB(0, 127, 251) -> BGR(251, 127, 0) (with space)
+        (0, 159, 253): "SR",    # Super Rare - RGB(253, 159, 0) -> BGR(0, 159, 253) (no space needed)
+        (251, 241, 60): "UR"    # Ultra Rare - RGB(60, 241, 251) -> BGR(251, 241, 60) (no space needed)
+    }
+
+    # Find the closest color using Euclidean distance
+    closest_rarity = "N "  # Default to Normal
+    min_distance = float('inf')
+
+    for color, rarity in target_colors.items():
+        distance = sum((pixel_bgr[i] - color[i]) ** 2 for i in range(3)) ** 0.5
+        if distance < min_distance:
+            min_distance = distance
+            closest_rarity = rarity
+
+    # Debug information
+    if Debug:
+        print(f"[analyze_card_rarity] Card {card_number}, Pixel BGR: {pixel_bgr}, Closest: {closest_rarity}, Distance: {min_distance:.2f}")
+
+    return closest_rarity
 
 
 def ocr_name_and_count(
@@ -2184,6 +2285,9 @@ def click_cards_and_extract_info_single_row(
                     return_count_header=True,
                 )
 
+                # Analyze card rarity by examining the specific color area
+                card_rarity = analyze_card_rarity(desc_zone_img, card_number=i + 1, row_number=row_number)
+
                 # Analyze dism_area for "Dustable" value using digit analysis similar to count analysis
                 dustable_value = analyze_dism_area(dism_area_img)
 
@@ -2228,35 +2332,36 @@ def click_cards_and_extract_info_single_row(
                         previous_card_info = {}
 
                 if card_name:  # Only process if we got a card name
-                    # Store count with its X coordinate, description zone width, and dustable value
-                    # card_summary now maps card_name -> (list_of_(count, count_header_x, desc_zone_width), dustable_value)
+                    # Store count with its X coordinate, description zone width, dustable value, and rarity
+                    # card_summary now maps card_name -> (list_of_(count, count_header_x, desc_zone_width, rarity), dustable_value)
                     desc_zone_width = (
                         desc_zone_img.shape[1] if desc_zone_img is not None else 400
                     )  # fallback width
 
                     if card_name in card_summary:
-                        # Add the new (count, count_header_x, desc_zone_width) tuple to the existing list
+                        # Add the new (count, count_header_x, desc_zone_width, rarity) tuple to the existing list
                         card_summary[card_name][0].append(
-                            (count, count_header_x, desc_zone_width)
+                            (count, count_header_x, desc_zone_width, card_rarity)
                         )
                         # Update dustable value to max if new value is greater
+                        # For rarity, keep the most recent one (as rarity might vary by card finish)
                         card_summary[card_name] = (
                             card_summary[card_name][0],
                             max(card_summary[card_name][1], dustable_value),
                         )
                         if Debug:
                             print(
-                                f"[click_cards_and_extract_info] Updated existing card '{card_name}': added count {count} at X={count_header_x}, dustable: {card_summary[card_name][1]}"
+                                f"[click_cards_and_extract_info] Updated existing card '{card_name}': added count {count} at X={count_header_x}, rarity: {card_rarity}, dustable: {card_summary[card_name][1]}"
                             )
                     else:
-                        # Create new entry with list containing one (count, count_header_x, desc_zone_width) tuple
+                        # Create new entry with list containing one (count, count_header_x, desc_zone_width, rarity) tuple
                         card_summary[card_name] = (
-                            [(count, count_header_x, desc_zone_width)],
+                            [(count, count_header_x, desc_zone_width, card_rarity)],
                             dustable_value,
                         )
                         if Debug:
                             print(
-                                f"[click_cards_and_extract_info] New card '{card_name}': {count} at X={count_header_x}, dustable: {dustable_value}"
+                                f"[click_cards_and_extract_info] New card '{card_name}': {count} at X={count_header_x}, rarity: {card_rarity}, dustable: {dustable_value}"
                             )
                 else:
                     if Debug:
@@ -2303,11 +2408,11 @@ def click_cards_and_extract_info_single_row(
 
 def click_cards_and_extract_info_multi_row(
     win, max_rows: int = 8
-) -> List[Tuple[str, List[Tuple[int, int, int]], int]]:
+) -> List[Tuple[str, List[Tuple[int, int, int, str]], int]]:
     """
     EXPANDED: Process one full loop of 8 rows with specific scrolling pattern.
     Scrolling pattern between rows: [1, 2, 1, 2, 1, 1, 2] scrolls for transitions 1→2, 2→3, 3→4, 4→5, 5→6, 6→7, 7→8
-    Returns list of tuples (card_name, list_of_(count, count_header_x, desc_zone_width), dustable_value) in encounter order.
+    Returns list of tuples (card_name, list_of_(count, count_header_x, desc_zone_width, rarity), dustable_value) in encounter order.
     """
     if Debug:
         print(
@@ -2345,7 +2450,7 @@ def click_cards_and_extract_info_multi_row(
                 cards_in_order
             ):
                 if existing_name == card_name:
-                    # Update existing entry - add new count/coordinate pairs and take max dustable value
+                    # Update existing entry - add new count/coordinate/rarity tuples and take max dustable value
                     new_dustable = max(existing_dustable, dustable_value)
                     # Combine the count lists
                     combined_count_list = existing_count_list + count_list
@@ -2408,12 +2513,12 @@ def click_cards_and_extract_info_multi_row(
 
 def process_full_collection_phases(
     win,
-) -> List[Tuple[str, List[Tuple[int, int, int]], int]]:
+) -> List[Tuple[str, List[Tuple[int, int, int, str]], int]]:
     """
     NEW: Process the collection using the redesigned two-phase approach:
     - PHASE 1: Process first 4 rows without scrolling by clicking partition boxes
     - PHASE 2: Process next 8 rows using the bottom 5th row as reference with scrolling
-    Returns list of tuples (card_name, list_of_(count, count_header_x, desc_zone_width), dustable_value) in encounter order.
+    Returns list of tuples (card_name, list_of_(count, count_header_x, desc_zone_width, rarity), dustable_value) in encounter order.
     """
     if Debug:
         print(
@@ -3446,13 +3551,14 @@ def find_and_extract_first_row_cards(win) -> bool:
 
 
 def print_card_summary(
-    cards_in_order: List[Tuple[str, List[Tuple[int, int, int]], int]],
+    cards_in_order: List[Tuple[str, List[Tuple[int, int, int, str]], int]],
 ):
     """
     CHANGE 3: Print final summary of all cards and counts.
     Handles duplicate card name aggregation and maintains encounter order.
-    Now displays the Dustable value for each card and card categories based on count header X position.
-    Uses description zone width to calculate percentages for card rarity classification.
+    Now displays the Dustable value for each card and card finish categories based on count header X position.
+    Uses description zone width to calculate percentages for card finish classification.
+    Also shows the card rarity with colored output.
     """
     # Filter out cards with empty names
     cards_in_order = [
@@ -3466,7 +3572,7 @@ def print_card_summary(
 
     print(f"\n=== FINAL CARD SUMMARY ===")
     print(f"Found {len(cards_in_order)} unique card(s) in encounter order:")
-    print("-" * 100)
+    print("-" * 120)
 
     total_cards = 0
     displayed_count = 0
@@ -3480,6 +3586,13 @@ def print_card_summary(
     LIGHT_RED = "\033[91m"
     RESET = "\033[0m"
 
+    # Rarity color codes
+    RARITY_WHITE = "\033[1;97m"      # Bold white for N (Normal)
+    RARITY_LIGHT_BLUE = "\033[1;94m" # Bold light blue for R (Rare)
+    RARITY_GOLD = "\033[1;93m"      # Bold gold/yellow for SR (Super Rare)
+    RARITY_DARK_BLUE = "\033[1;96m"  # Bold cyan (as closest to dark blue) for UR (Ultra Rare)
+    RARITY_BOLD = "\033[1m"          # Bold for all rarities
+
     for i, (card_name, count_list, dustable_value) in enumerate(cards_in_order):
         # Debug: Show all entries being processed
         # print(f"[DEBUG] Entry {i+1}: '{card_name}' {count_list} dustable:{dustable_value}")
@@ -3488,10 +3601,10 @@ def print_card_summary(
         if card_name and card_name.strip():
             displayed_count += 1
 
-            # Format the count entries with categories instead of raw coordinates
-            # Each count_list entry is now (count, x_coord, desc_zone_width)
+            # Format the count entries with categories and rarities
+            # Each count_list entry is now (count, x_coord, desc_zone_width, rarity)
             count_strings = []
-            for count, x_coord, desc_zone_width in count_list:
+            for count, x_coord, desc_zone_width, rarity in count_list:
                 category = determine_card_category(x_coord, desc_zone_width)
                 # Apply color based on category
                 if category == "Basic":
@@ -3504,20 +3617,59 @@ def print_card_summary(
                     # Fallback for any other categories
                     colored_category = category
 
+                # Apply color based on rarity (for individual count entries)
+                if rarity == "N ":
+                    colored_count_rarity = f"{RARITY_WHITE}{RARITY_BOLD}{rarity}{RESET}"
+                elif rarity == "R ":
+                    colored_count_rarity = f"{RARITY_LIGHT_BLUE}{RARITY_BOLD}{rarity}{RESET}"
+                elif rarity == "SR":
+                    colored_count_rarity = f"{RARITY_GOLD}{RARITY_BOLD}{rarity}{RESET}"
+                elif rarity == "UR":
+                    colored_count_rarity = f"{RARITY_DARK_BLUE}{RARITY_BOLD}{rarity}{RESET}"
+                else:
+                    # Default for unknown rarities
+                    colored_count_rarity = f"{RARITY_BOLD}{rarity}{RESET}"
+
                 count_strings.append(f"{colored_category} x{count}")
 
             counts_str = ", ".join(count_strings)
+
+            # Extract the rarity from the first count entry to display before the card name
+            first_rarity = "N "  # Default rarity
+            if count_list:
+                # Each count_list entry is (count, x_coord, desc_zone_width, rarity)
+                _, _, _, first_rarity = count_list[0]
+
+            # Apply color to the rarity
+            if first_rarity == "N ":
+                colored_rarity = f"{RARITY_WHITE}{RARITY_BOLD}{first_rarity}{RESET}"
+            elif first_rarity == "R ":
+                colored_rarity = f"{RARITY_LIGHT_BLUE}{RARITY_BOLD}{first_rarity}{RESET}"
+            elif first_rarity == "SR":
+                colored_rarity = f"{RARITY_GOLD}{RARITY_BOLD}{first_rarity}{RESET}"
+            elif first_rarity == "UR":
+                colored_rarity = f"{RARITY_DARK_BLUE}{RARITY_BOLD}{first_rarity}{RESET}"
+            else:
+                # Default for unknown rarities
+                colored_rarity = f"{RARITY_BOLD}{first_rarity}{RESET}"
+
+            # Keep trailing space for N and R, remove for SR and UR
+            if first_rarity in ["N ", "R "]:
+                display_rarity = first_rarity  # Keep the space
+            else:
+                display_rarity = first_rarity.rstrip()  # Remove space for SR, UR
+
             print(
-                f"{displayed_count}. {BOLD_WHITE}{card_name}{RESET} |  {LIGHT_BLUE}COPIES{RESET}: {counts_str} |  {LIGHT_RED}DUSTABLE{RESET}: x{dustable_value}"
+                f"{displayed_count}. {colored_rarity}[{display_rarity}] {BOLD_WHITE}{card_name}{RESET} |  {LIGHT_BLUE}COPIES{RESET}: {counts_str} |  {LIGHT_RED}DUSTABLE{RESET}: x{dustable_value}"
             )
 
             # Calculate total count for this card
-            card_total = sum(count for count, _, _ in count_list)
+            card_total = sum(count for count, _, _, _ in count_list)
             total_cards += card_total
         else:
             print(f"[DEBUG] Skipped empty card name at position {i + 1}")
 
-    print("-" * 100)
+    print("-" * 120)
     # print(f"Total unique cards displayed: {displayed_count}")
     print(f"Total unique cards in list: {len(cards_in_order)}")
     print(f"Total card count: {total_cards}")
