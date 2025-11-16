@@ -20,12 +20,13 @@ from pathlib import Path
 from typing import Dict, Tuple, Optional
 
 import requests
-from bs4 import BeautifulSoup
 from rapidfuzz import process, fuzz
 
 # ---------------------------------------------------------------------
 # Configuration / filenames
 # ---------------------------------------------------------------------
+Debug = False
+
 YGOPRODECK_API = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
 CARDS_CACHE = Path("cache/ygo_cards_cache.json")
 LEGACY_CACHE = Path("cache/legacy_cache.json")
@@ -33,26 +34,6 @@ LEGACY_CACHE = Path("cache/legacy_cache.json")
 SCORER = fuzz.WRatio
 REQUEST_TIMEOUT = 12.0
 HEADERS = {"User-Agent": "ygo-collection-tool/1.0 (+https://github.com/you)"}
-
-# Priority keywords for fallback rarity extraction (more specific -> earlier)
-RARITY_KEYWORDS_PRIORITY = [
-    "Secret Rare",
-    "Ultimate Rare",
-    "Ghost Rare",
-    "Ultra Rare",
-    "Super Rare",
-    "Rare",
-    "Common",
-    "Gold Rare",
-    "Prismatic Rare",
-    "Parallel Rare",
-    "Collector's Rare",
-    "Diamond Rare",
-    "Normal",
-    "SR",
-    "UR",
-    "MR",
-]
 
 
 # ---------------------------------------------------------------------
@@ -75,12 +56,17 @@ def fetch_or_load_cards() -> Dict[str, Dict]:
         try:
             with CARDS_CACHE.open("r", encoding="utf-8") as f:
                 data = json.load(f)
-            print(f"[cards] Loaded {len(data)} entries from cache {CARDS_CACHE}")
+            if Debug:
+                print(f"[cards] Loaded {len(data)} entries from cache {CARDS_CACHE}")
             return data
         except Exception as e:
-            print(f"[cards] Failed to read cache ({e}), will attempt fresh download.")
+            if Debug:
+                print(
+                    f"[cards] Failed to read cache ({e}), will attempt fresh download."
+                )
 
-    print("[cards] Downloading canonical card list from YGOPRODeck...")
+    if Debug:
+        print("[cards] Downloading canonical card list from YGOPRODeck...")
     try:
         r = requests.get(YGOPRODECK_API, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         r.raise_for_status()
@@ -95,14 +81,17 @@ def fetch_or_load_cards() -> Dict[str, Dict]:
         CARDS_CACHE.parent.mkdir(parents=True, exist_ok=True)
         with CARDS_CACHE.open("w", encoding="utf-8") as f:
             json.dump(mapping, f, ensure_ascii=False, indent=1)
-        print(
-            f"[cards] Downloaded and cached {len(mapping)} card entries to {CARDS_CACHE}"
-        )
+        if Debug:
+            print(
+                f"[cards] Downloaded and cached {len(mapping)} card entries to {CARDS_CACHE}"
+            )
         return mapping
     except Exception as e:
-        print(f"[cards] ERROR: failed download: {e}")
+        if Debug:
+            print(f"[cards] ERROR: failed download: {e}")
         if CARDS_CACHE.exists():
-            print("[cards] Falling back to existing cache file.")
+            if Debug:
+                print("[cards] Falling back to existing cache file.")
             with CARDS_CACHE.open("r", encoding="utf-8") as f:
                 return json.load(f)
         raise
@@ -126,6 +115,20 @@ class CanonicalMatcher:
         return matched_name, float(score)
 
 
+def match_card_name(query: str) -> Tuple[str, bool]:
+    cards_map = fetch_or_load_cards()
+    canonical_names = list(cards_map.keys())
+    if not canonical_names:
+        return "", False
+    matcher = CanonicalMatcher(canonical_names)
+    best_name, score = matcher.match(query)
+    if not best_name:
+        return "", False
+    legacy_cache = load_legacy_cache()
+    in_legacy = is_in_legacy_pack_masterduelmeta(best_name, legacy_cache)
+    return best_name, in_legacy
+
+
 # ---------------------------------------------------------------------
 # MasterDuelMeta: determine Legacy Pack membership AND Master Duel rarity
 # (verbose: prints attempted URL and response info)
@@ -146,64 +149,18 @@ def save_legacy_cache(cache: Dict):
             json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8"
         )
     except Exception as e:
-        print(f"[legacy] Warning: failed to save legacy cache: {e}")
+        if Debug:
+            print(f"[legacy] Warning: failed to save legacy cache: {e}")
 
 
-def _extract_rarity_from_soup(soup: BeautifulSoup) -> Optional[str]:
-    """Try multiple heuristics to extract rarity text from the MasterDuelMeta page DOM."""
-    # 1) Find element(s) containing the word "Rarity" and parse nearby text
-    rarity_nodes = soup.find_all(
-        string=lambda t: t and re.search(r"\brarity\b", t, re.I)
-    )
-    for node in rarity_nodes:
-        try:
-            text = node.parent.get_text(separator=" ", strip=True)
-            parts = re.split(r"Rarity[:\s-]*", text, flags=re.I)
-            if len(parts) >= 2:
-                candidate = parts[1].strip()
-                candidate = re.split(r"[\n\r/–\-\|,]", candidate)[0].strip()
-                if candidate:
-                    return candidate
-        except Exception:
-            continue
-
-    # 2) Look for table style: find table rows where the header or first cell includes 'Rarity'
-    for th in soup.find_all(["th", "td"]):
-        try:
-            label = th.get_text(separator=" ", strip=True)
-            if re.search(r"\brarity\b", label, re.I):
-                sib = th.find_next_sibling()
-                if sib:
-                    txt = sib.get_text(separator=" ", strip=True)
-                    if txt:
-                        return txt.split("\n")[0].strip()
-        except Exception:
-            continue
-
-    # 3) Fallback: scan full page text for priority keywords (most specific first)
-    page_text = soup.get_text(separator=" ", strip=True)
-    for kw in RARITY_KEYWORDS_PRIORITY:
-        if re.search(re.escape(kw), page_text, re.I):
-            return kw
-
-    # 4) Nothing found
-    return None
-
-
-def is_in_legacy_pack_masterduelmeta(
-    card_name: str, cache: Dict
-) -> Tuple[bool, Optional[str], str]:
+def is_in_legacy_pack_masterduelmeta(card_name: str, cache: Dict) -> bool:
     """
-    Checks MasterDuelMeta for legacy pack membership and returns (legacy_bool, rarity_or_None, detail_text).
+    Checks MasterDuelMeta for legacy pack membership and returns legacy_bool.
     This verbose variant prints the attempted URL and the HTTP response status/resolved URL.
     """
     if card_name in cache:
         entry = cache[card_name]
-        return (
-            bool(entry.get("legacy", False)),
-            entry.get("rarity"),
-            entry.get("detail", ""),
-        )
+        return bool(entry.get("legacy", False))
 
     from urllib.parse import quote
 
@@ -211,70 +168,62 @@ def is_in_legacy_pack_masterduelmeta(
     url = f"https://www.masterduelmeta.com/cards/{url_encoded}"
 
     # Print attempted URL for monitoring
-    print(f"Attempting MasterDuelMeta URL: {url}")
+    if Debug:
+        print(f"Attempting MasterDuelMeta URL: {url}")
 
     try:
         r = requests.get(
             url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True
         )
     except Exception as e:
-        detail = f"network error when requesting {url}: {e}"
-        print(f"Network error for URL {url}: {e}")
+        if Debug:
+            print(f"Network error for URL {url}: {e}")
         # Do not cache on failure
-        return False, None, detail
+        return False
 
     # Print response status and final URL after redirects
     try:
         status = r.status_code
         final_url = getattr(r, "url", url)
-        print(f"HTTP {status} - Resolved URL: {final_url}")
-        # Print a short snippet of the body for debugging if non-200 (first 300 chars)
-        if status != 200:
-            snippet = (r.text or "")[:300].replace("\n", " ").replace("\r", " ")
-            print(f"Response body snippet (first 300 chars): {snippet!s}")
+        if Debug:
+            print(f"HTTP {status} - Resolved URL: {final_url}")
+            # Print a short snippet of the body for debugging if non-200 (first 300 chars)
+            if status != 200:
+                snippet = (r.text or "")[:300].replace("\n", " ").replace("\r", " ")
+                print(f"Response body snippet (first 300 chars): {snippet!s}")
     except Exception as e:
-        print(f"Failed to inspect response: {e}")
+        if Debug:
+            print(f"Failed to inspect response: {e}")
 
     if r.status_code == 404:
-        detail = f"card page not found (404) for attempted URL: {url}"
-        print(f"404 Not Found for URL: {url}")
+        if Debug:
+            print(f"404 Not Found for URL: {url}")
         # Do not cache on failure
-        return False, None, detail
+        return False
 
     try:
         r.raise_for_status()
     except Exception as e:
-        detail = f"HTTP error {r.status_code} for {url}: {e}"
-        print(f"HTTP error {r.status_code} for URL: {url} - {e}")
+        if Debug:
+            print(f"HTTP error {r.status_code} for URL: {url} - {e}")
         # Do not cache on failure
-        return False, None, detail
+        return False
 
     html = r.text
 
     # quick detect legacy
     in_legacy = "Legacy Pack" in html or "Legacy pack" in html or "Legacy Pack" in html
 
-    # parse DOM to try to extract rarity
-    soup = BeautifulSoup(html, "lxml")
-    rarity = _extract_rarity_from_soup(soup)
-
-    detail = f"resolved_url={r.url}; http_status={r.status_code}"
-    if in_legacy:
-        detail += "; Legacy Pack text found"
-    if rarity:
-        detail += f"; rarity={rarity}"
-    if not detail:
-        detail = "no legacy/rarity info found (heuristics)."
-
-    cache[card_name] = {"legacy": bool(in_legacy), "rarity": rarity, "detail": detail}
+    cache[card_name] = {"legacy": bool(in_legacy)}
     save_legacy_cache(cache)
-    return bool(in_legacy), rarity, detail
+    return bool(in_legacy)
 
 
 # ---------------------------------------------------------------------
 # CLI entrypoint
 # ---------------------------------------------------------------------
 def main():
+    global Debug
     p = argparse.ArgumentParser(
         description="Fuzzy-match a Yu-Gi-Oh! card name and check MasterDuelMeta Legacy Pack + MD rarity (verbose URLs)."
     )
@@ -292,8 +241,6 @@ def main():
     if not query_raw:
         print("Empty query.")
         sys.exit(2)
-
-    print(f"[input] Query: {query_raw!r}")
 
     print(f"[input] Query: {query_raw!r}")
 
@@ -320,11 +267,8 @@ def main():
     print(f"[match] Best canonical name: {best_name!r}  score={score:.2f} (0-100)")
 
     legacy_cache = load_legacy_cache()
-    in_legacy, rarity, detail = is_in_legacy_pack_masterduelmeta(
-        best_name, legacy_cache
-    )
-    print(f"[legacy] In Legacy Pack (MasterDuelMeta): {in_legacy}  detail: {detail}")
-    print(f"[rarity] Master Duel rarity (heuristic): {rarity!r}")
+    in_legacy = is_in_legacy_pack_masterduelmeta(best_name, legacy_cache)
+    print(f"[legacy] In Legacy Pack? {in_legacy}")
 
 
 if __name__ == "__main__":
