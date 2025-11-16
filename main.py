@@ -3549,22 +3549,22 @@ def find_and_extract_first_row_cards(win) -> bool:
 
 # ---------- Entrypoint ----------
 
-
 def print_card_summary(
     cards_in_order: List[Tuple[str, List[Tuple[int, int, int, str]], int]],
 ):
     """
-    CHANGE 3: Print final summary of all cards and counts.
-    Handles duplicate card name aggregation and maintains encounter order.
-    Now displays the Dustable value for each card and card finish categories based on count header X position.
-    Uses description zone width to calculate percentages for card finish classification.
-    Also shows the card rarity with colored output.
+    CHANGE 3: Print final summary of all cards and counts. Handles duplicate card name aggregation
+    and maintains encounter order. Now displays the Dustable value for each card and card finish
+    categories based on count header X position. Uses description zone width to calculate percentages
+    for card finish classification. Also shows the card rarity with colored output.
+
+    Minimal changes made: rarity is printed JUST ONCE (inside square brackets) and the brackets
+    themselves are colored/bolded to match the rarity. No other formatting changed.
     """
     # Filter out cards with empty names
     cards_in_order = [
         (name, cl, dv) for name, cl, dv in cards_in_order if name and name.strip()
     ]
-
     if not cards_in_order:
         print("\n=== FINAL CARD SUMMARY ===")
         print("No cards were successfully processed.")
@@ -3586,95 +3586,77 @@ def print_card_summary(
     LIGHT_RED = "\033[91m"
     RESET = "\033[0m"
 
-    # Rarity color codes
-    RARITY_WHITE = "\033[1;97m"      # Bold white for N (Normal)
-    RARITY_LIGHT_BLUE = "\033[1;94m" # Bold light blue for R (Rare)
-    RARITY_GOLD = "\033[1;93m"      # Bold gold/yellow for SR (Super Rare)
-    RARITY_DARK_BLUE = "\033[1;96m"  # Bold cyan (as closest to dark blue) for UR (Ultra Rare)
-    RARITY_BOLD = "\033[1m"          # Bold for all rarities
+    # Rarity color codes (bold)
+    RARITY_WHITE = "\033[1;97m"  # Bold white for N (Normal)
+    RARITY_LIGHT_BLUE = "\033[1;94m"  # Bold light blue for R (Rare)
+    RARITY_GOLD = "\033[1;93m"  # Bold gold/yellow for SR (Super Rare)
+    RARITY_DARK_BLUE = "\033[1;96m"  # Bold cyan (as closest to dark blue)
+    RARITY_BOLD = "\033[1m"  # Bold for any fallback
 
     for i, (card_name, count_list, dustable_value) in enumerate(cards_in_order):
-        # Debug: Show all entries being processed
-        # print(f"[DEBUG] Entry {i+1}: '{card_name}' {count_list} dustable:{dustable_value}")
-
         # Only display non-empty card names
-        if card_name and card_name.strip():
-            displayed_count += 1
-
-            # Format the count entries with categories and rarities
-            # Each count_list entry is now (count, x_coord, desc_zone_width, rarity)
-            count_strings = []
-            for count, x_coord, desc_zone_width, rarity in count_list:
-                category = determine_card_category(x_coord, desc_zone_width)
-                # Apply color based on category
-                if category == "Basic":
-                    colored_category = f"{BASIC_COLOR}{category}{RESET}"
-                elif category == "Glossy":
-                    colored_category = f"{GLOSSY_COLOR}{category}{RESET}"
-                elif category == "Royal":
-                    colored_category = f"{ROYAL_COLOR}{category}{RESET}"
-                else:
-                    # Fallback for any other categories
-                    colored_category = category
-
-                # Apply color based on rarity (for individual count entries)
-                if rarity == "N ":
-                    colored_count_rarity = f"{RARITY_WHITE}{RARITY_BOLD}{rarity}{RESET}"
-                elif rarity == "R ":
-                    colored_count_rarity = f"{RARITY_LIGHT_BLUE}{RARITY_BOLD}{rarity}{RESET}"
-                elif rarity == "SR":
-                    colored_count_rarity = f"{RARITY_GOLD}{RARITY_BOLD}{rarity}{RESET}"
-                elif rarity == "UR":
-                    colored_count_rarity = f"{RARITY_DARK_BLUE}{RARITY_BOLD}{rarity}{RESET}"
-                else:
-                    # Default for unknown rarities
-                    colored_count_rarity = f"{RARITY_BOLD}{rarity}{RESET}"
-
-                count_strings.append(f"{colored_category} x{count}")
-
-            counts_str = ", ".join(count_strings)
-
-            # Extract the rarity from the first count entry to display before the card name
-            first_rarity = "N "  # Default rarity
-            if count_list:
-                # Each count_list entry is (count, x_coord, desc_zone_width, rarity)
-                _, _, _, first_rarity = count_list[0]
-
-            # Apply color to the rarity
-            if first_rarity == "N ":
-                colored_rarity = f"{RARITY_WHITE}{RARITY_BOLD}{first_rarity}{RESET}"
-            elif first_rarity == "R ":
-                colored_rarity = f"{RARITY_LIGHT_BLUE}{RARITY_BOLD}{first_rarity}{RESET}"
-            elif first_rarity == "SR":
-                colored_rarity = f"{RARITY_GOLD}{RARITY_BOLD}{first_rarity}{RESET}"
-            elif first_rarity == "UR":
-                colored_rarity = f"{RARITY_DARK_BLUE}{RARITY_BOLD}{first_rarity}{RESET}"
-            else:
-                # Default for unknown rarities
-                colored_rarity = f"{RARITY_BOLD}{first_rarity}{RESET}"
-
-            # Keep trailing space for N and R, remove for SR and UR
-            if first_rarity in ["N ", "R "]:
-                display_rarity = first_rarity  # Keep the space
-            else:
-                display_rarity = first_rarity.rstrip()  # Remove space for SR, UR
-
-            print(
-                f"{displayed_count}. {colored_rarity}[{display_rarity}] {BOLD_WHITE}{card_name}{RESET} |  {LIGHT_BLUE}COPIES{RESET}: {counts_str} |  {LIGHT_RED}DUSTABLE{RESET}: x{dustable_value}"
-            )
-
-            # Calculate total count for this card
-            card_total = sum(count for count, _, _, _ in count_list)
-            total_cards += card_total
-        else:
+        if not card_name or not card_name.strip():
+            # Shouldn't happen due to prior filtering, but keep the debug line
             print(f"[DEBUG] Skipped empty card name at position {i + 1}")
+            continue
+
+        displayed_count += 1
+
+        # Build count strings (categories per count)
+        count_strings = []
+        for count, x_coord, desc_zone_width, rarity in count_list:
+            category = determine_card_category(x_coord, desc_zone_width)
+            # Apply color based on category
+            if category == "Basic":
+                colored_category = f"{BASIC_COLOR}{category}{RESET}"
+            elif category == "Glossy":
+                colored_category = f"{GLOSSY_COLOR}{category}{RESET}"
+            elif category == "Royal":
+                colored_category = f"{ROYAL_COLOR}{category}{RESET}"
+            else:
+                colored_category = category
+            count_strings.append(f"{colored_category} x{count}")
+        counts_str = ", ".join(count_strings)
+
+        # Extract the rarity from the first count entry to display before the card name
+        first_rarity = "N "  # default
+        if count_list:
+            # Each count_list entry is (count, x_coord, desc_zone_width, rarity)
+            _, _, _, first_rarity = count_list[0]
+
+        # Normalize display string for rarity (keep trailing space for N and R as you had)
+        if first_rarity in ["N ", "R "]:
+            display_rarity = first_rarity
+        else:
+            display_rarity = first_rarity.rstrip()
+
+        # Build one colored + bolded rarity string that includes the brackets and will be printed once.
+        # Brackets must match colour and boldness of the rarity text.
+        if first_rarity == "N ":
+            colored_rarity_with_brackets = f"{RARITY_WHITE}[{display_rarity}]{RESET}"
+        elif first_rarity == "R ":
+            colored_rarity_with_brackets = f"{RARITY_LIGHT_BLUE}[{display_rarity}]{RESET}"
+        elif first_rarity == "SR":
+            colored_rarity_with_brackets = f"{RARITY_GOLD}[{display_rarity}]{RESET}"
+        elif first_rarity == "UR":
+            colored_rarity_with_brackets = f"{RARITY_DARK_BLUE}[{display_rarity}]{RESET}"
+        else:
+            # Fallback: bold the rarity and brackets
+            colored_rarity_with_brackets = f"{RARITY_BOLD}[{display_rarity}]{RESET}"
+
+        # Print final line. Only change from your original format is using colored_rarity_with_brackets
+        print(
+            f"{displayed_count}. {colored_rarity_with_brackets} {BOLD_WHITE}{card_name}{RESET} | "
+            f"{LIGHT_BLUE}COPIES{RESET}: {counts_str} | {LIGHT_RED}DUSTABLE{RESET}: x{dustable_value}"
+        )
+
+        # Calculate total count for this card
+        card_total = sum(count for count, _, _, _ in count_list)
+        total_cards += card_total
 
     print("-" * 120)
-    # print(f"Total unique cards displayed: {displayed_count}")
     print(f"Total unique cards in list: {len(cards_in_order)}")
     print(f"Total card count: {total_cards}")
-
-    # Additional debug info
     if displayed_count != len(cards_in_order):
         print(
             f"[DEBUG] Mismatch detected: {len(cards_in_order) - displayed_count} cards have empty names"
