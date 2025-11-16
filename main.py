@@ -3578,7 +3578,7 @@ def print_card_summary(
 
     print(f"\n=== FINAL CARD SUMMARY ===")
     print(f"Found {len(cards_in_order)} unique card(s) in encounter order:")
-    print("-" * 90)
+    #print("-" * 90)
 
     # ANSI color codes
     BOLD_WHITE = "\033[1;97m"  # Bold white for card names
@@ -3642,16 +3642,16 @@ def print_card_summary(
 
             # Apply color to the rarity with brackets
             if first_rarity == "N ":
-                colored_rarity_with_brackets = f"{RARITY_WHITE}[{first_rarity.rstrip()}]{RESET}"
+                colored_rarity_with_brackets = f"{RARITY_WHITE}[{first_rarity}]{RESET}"
             elif first_rarity == "R ":
-                colored_rarity_with_brackets = f"{RARITY_LIGHT_BLUE}[{first_rarity.rstrip()}]{RESET}"
+                colored_rarity_with_brackets = f"{RARITY_LIGHT_BLUE}[{first_rarity}]{RESET}"
             elif first_rarity == "SR":
                 colored_rarity_with_brackets = f"{RARITY_GOLD}[{first_rarity}]{RESET}"
             elif first_rarity == "UR":
                 colored_rarity_with_brackets = f"{RARITY_DARK_BLUE}[{first_rarity}]{RESET}"
             else:
                 # Fallback: bold the rarity and brackets
-                colored_rarity_with_brackets = f"{RARITY_BOLD}[{first_rarity.rstrip()}]{RESET}"
+                colored_rarity_with_brackets = f"{RARITY_BOLD}[{first_rarity}]{RESET}"
 
             # Calculate total count for this card
             card_total = sum(count for count, _, _, _ in count_list)
@@ -3671,27 +3671,36 @@ def print_card_summary(
                 gem_pack_cards.append((i, card_info))
 
     # Print Gem Pack & Structure Deck section
+    # Determine a global width across both sections so indexes align between sections
+    combined_total = max(1, len(gem_pack_cards) + len(legacy_pack_cards))
+    global_width = len(str(combined_total))
+
+    # Print Gem Pack & Structure Deck section
     if gem_pack_cards:
         print(f"\n{UNDERLINE_WHITE}Gem Pack & Structure Deck{RESET}")
         for idx, (_, card_info) in enumerate(gem_pack_cards, 1):
+            idx_str = str(idx).zfill(global_width)
             print(
-                f"{idx}. {card_info['colored_rarity_with_brackets']} {BOLD_WHITE}{card_info['display_name']}{RESET} | "
+                f"{idx_str}. {card_info['colored_rarity_with_brackets']} {BOLD_WHITE}{card_info['display_name']}{RESET} | "
                 f"{LIGHT_BLUE}COPIES{RESET}: {card_info['counts_str']} | {LIGHT_RED}DUSTABLE{RESET}: x{card_info['dustable_value']}"
             )
 
     # Print Legacy Pack section if there are legacy cards
     if legacy_pack_cards:
         print(f"\n{UNDERLINE_WHITE}Legacy Pack{RESET}")
+        # offset the index base for the legacy section if you want continuity, or restart at 1.
+        # If you want separate numbering in each section (but same width), keep enumerate(..., 1)
         for idx, (_, card_info) in enumerate(legacy_pack_cards, 1):
+            idx_str = str(idx).zfill(global_width)
             print(
-                f"{idx}. {card_info['colored_rarity_with_brackets']} {BOLD_WHITE}{card_info['display_name']}{RESET} | "
+                f"{idx_str}. {card_info['colored_rarity_with_brackets']} {BOLD_WHITE}{card_info['display_name']}{RESET} | "
                 f"{LIGHT_BLUE}COPIES{RESET}: {card_info['counts_str']} | {LIGHT_RED}DUSTABLE{RESET}: x{card_info['dustable_value']}"
             )
 
     # Print total statistics
     total_cards = sum(card_info['card_total'] for _, card_info in gem_pack_cards + legacy_pack_cards)
     total_unique = len(gem_pack_cards) + len(legacy_pack_cards)
-    print("-" * 90)
+    # print("-" * 90)
     print(f"Total unique cards: {total_unique}")
     print(f"Total card count: {total_cards}")
     if gem_pack_cards:
@@ -4586,10 +4595,10 @@ def main():
     """
     print("Starting Master Duel Collection Exporter...")
     print(
-        "This will process the first 12 rows of cards using the redesigned two-phase approach."
+        "This will process your entire collection using the redesigned two-phase approach."
     )
     print("- Phase 1: Process first 4 rows without scrolling")
-    print("- Phase 2: Process next 8 rows with scrolling using preset pattern")
+    print("- Phase 2: Process until the end of collection with scrolling using preset pattern")
     print("Press Ctrl+C at any time to stop and see current results.")
 
     # Setup signal handler for graceful interruption
