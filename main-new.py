@@ -10,8 +10,11 @@ import time
 import signal
 import sys
 import re
+import datetime
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
+from urllib.parse import quote
+import requests
 
 import cv2
 import numpy as np
@@ -21,10 +24,14 @@ import pyautogui
 import pygetwindow as gw
 
 # Configuration
+SCROLL_DELAY = 0 # 0.15 # delay between each consecutive scroll in the scroll pattern
+AFTER_SCROLL_DELAY = 0.1 # 0.8 # delay after large scroll down onto a new row of cards
+CLICK_DESC_DELAY = 0 # 0.5 # delay between clicking a card and the next card
 WINDOW_TITLE_KEYWORD = "masterduel"
-OUTPUT_CSV = "collection_output.csv"
-SUMMARY = True
+OUTPUT_CSV = "collection_output"
 DEBUG = False
+SUMMARY = True
+CSV = True
 
 # Template cache to avoid repeated loading
 _TEMPLATE_CACHE = {}
@@ -268,47 +275,156 @@ def analyze_dism_area(dism_area_img: np.ndarray) -> int:
         pass
     return 0
 
-def analyze_card_rarity(description_zone_img: np.ndarray, card_number: int = 0, 
-                       row_number: int = 1) -> str:
-    """Analyze card rarity by color detection in specific region"""
-    if description_zone_img is None or description_zone_img.size == 0:
-        return "N "
-    h, w = description_zone_img.shape[:2]
-    main_area_h = int(h * 0.28)
-    main_area_w = int(w * 0.375)
-    sub_area_h = int(main_area_h * 0.20)
-    sub_area_w = int(main_area_w * 0.20)
-    sub_area_x = main_area_w - sub_area_w
-    sub_area_y = main_area_h - sub_area_h
-    sub_area_x = max(0, min(sub_area_x, w - 1))
-    sub_area_y = max(0, min(sub_area_y, h - 1))
-    sub_area_w = min(sub_area_w, w - sub_area_x)
-    sub_area_h = min(sub_area_h, h - sub_area_y)
-    
-    if sub_area_h > 0 and sub_area_w > 0:
-        bottom_right_pixel = description_zone_img[sub_area_y + sub_area_h - 1, 
-                                                  sub_area_x + sub_area_w - 1]
-        pixel_bgr = [int(bottom_right_pixel[0]), int(bottom_right_pixel[1]), 
-                     int(bottom_right_pixel[2])]
-    else:
-        pixel_bgr = [128, 128, 128]
-    
-    # Target colors in BGR format
-    target_colors = {
-        (155, 153, 153): "N ",
-        (251, 127, 0): "R ",
-        (0, 159, 253): "SR",
-        (251, 241, 60): "UR"
-    }
-    
-    closest_rarity = "N "
-    min_distance = float('inf')
-    for color, rarity in target_colors.items():
-        distance = sum((pixel_bgr[i] - color[i]) ** 2 for i in range(3)) ** 0.5
-        if distance < min_distance:
-            min_distance = distance
-            closest_rarity = rarity
-    return closest_rarity
+def get_card_info(canonical_name: str) -> dict:
+    """Fetch full card info from YGOPRODECK API using canonical name"""
+    if not canonical_name:
+        return {}
+    url = f"https://db.ygoprodeck.com/api/v7/cardinfo.php?name={quote(canonical_name)}&misc=yes"
+    try:
+        r = requests.get(url, timeout=5.0)
+        r.raise_for_status()
+        data = r.json()
+        if "data" in data and data["data"]:
+            return data["data"][0]
+    except Exception:
+        pass
+    return {}
+
+def get_card_rarity_from_info(card_info: dict) -> str:
+    """Extract rarity string from card info dict"""
+    misc_info = card_info.get("misc_info", [])
+    for misc in misc_info:
+        if "md_rarity" in misc:
+            md_rarity = misc["md_rarity"]
+            if md_rarity == "Common":
+                return "N "
+            elif md_rarity == "Rare":
+                return "R "
+            elif md_rarity == "Super Rare":
+                return "SR"
+            elif md_rarity == "Ultra Rare":
+                return "UR"
+    return "N "
+
+def prepare_csv_data(cards_in_order) -> List:
+    """Prepare CSV data from cards_in_order"""
+    print("Preparing CSV file data...")
+    csv_data = []
+    try:
+        from card_name_matcher import get_canonical_name_and_legacy_status
+        use_matcher = True
+    except Exception:
+        use_matcher = False
+    for idx, (card_name, count_list, dustable_value) in enumerate(cards_in_order):
+        if use_matcher:
+            canonical_name, is_legacy_pack = get_canonical_name_and_legacy_status(card_name)
+        else:
+            canonical_name, is_legacy_pack = card_name, False
+        if not canonical_name or canonical_name.strip() == "":
+            canonical_name = card_name
+        display_name = canonical_name
+        legacy_status = bool(is_legacy_pack)
+        card_info = get_card_info(canonical_name)
+        card_rarity = get_card_rarity_from_info(card_info)
+        # Update rarity in count_list
+        for item in count_list:
+            item[3] = card_rarity
+        # Compute category counts
+        basic_count = 0
+        glossy_count = 0
+        royal_count = 0
+        for count, x_coord, desc_zone_width, _ in count_list:
+            category = determine_card_category(x_coord, desc_zone_width)
+            if category == "Basic":
+                basic_count += count
+            elif category == "Glossy":
+                glossy_count += count
+            elif category == "Royal":
+                royal_count += count
+        total_copies = sum(count for count, _, _, _ in count_list)
+        copies_str = f"{total_copies} [Basic {basic_count}, Glossy {glossy_count}, Royal {royal_count}]"
+        # Rarity token
+        first_rarity = card_rarity.strip()
+        if first_rarity in ("N", "R"):
+            visible_token = first_rarity + " "
+        else:
+            visible_token = first_rarity
+        # Determine Card Type based on frameType
+        frame_type = card_info.get("frameType", "")
+        if frame_type == "trap":
+            card_type = "Trap"
+        elif frame_type == "spell":
+            card_type = "Spell"
+        else:
+            card_type = "Monster"
+
+        # Card Stats
+        card_stats = ""
+        if card_info.get("type") not in ["Trap Card", "Spell Card"]:
+            if frame_type == "xyz":
+                level = card_info.get("level", "")
+                card_stats = f" Rank {level}, "
+            elif frame_type == "link":
+                linkval = card_info.get("linkval", "")
+                card_stats = f" Link {linkval}, "
+            else:
+                level = card_info.get("level", "")
+                card_stats = f" Level {level}, "
+            attribute = card_info.get("attribute", "")
+            race = card_info.get("race", "")
+            atk = card_info.get("atk", "")
+            def_val = card_info.get("def")
+            def_str = "-" if def_val is None else str(def_val)
+            card_stats += f"{attribute}, {race}, {atk}/{def_str}"
+
+        csv_row = {
+            "rarity": visible_token,
+            "name": display_name,
+            "legacy": "Yes" if legacy_status else "No",
+            "copies": copies_str,
+            "dustable": dustable_value,
+            "archetype": card_info.get("archetype") or None,
+            "card_type": card_type,
+            "subtype": card_info.get("humanReadableCardType", ""),
+            "card_stats": card_stats,
+            "effect": card_info.get("desc", "").replace("\n", " ").replace("\r", " "),
+        }
+        csv_data.append(csv_row)
+    return csv_data
+
+def write_csv(csv_data, message=None):
+    """Write CSV data to file"""
+    print("Saving collection to CSV file...")
+    try:
+        import csv
+        csv_dir = Path("collection_csv")
+        csv_dir.mkdir(exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_[%H%M]")
+        base_name = OUTPUT_CSV
+        filename = f"{base_name}_{timestamp}.csv"
+        filepath = csv_dir / filename
+        with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=["Rarity", "Name", "Legacy Pack", "Copies", "Dustable", "Archetype", "Card Frame", "Card Type", "Card Stats", "Effect"])
+            writer.writeheader()
+            for row in csv_data:
+                writer.writerow({
+                    "Rarity": row["rarity"],
+                    "Name": row["name"],
+                    "Legacy Pack": row["legacy"],
+                    "Copies": row["copies"],
+                    "Dustable": row["dustable"],
+                    "Archetype": row["archetype"],
+                    "Card Frame": row["card_type"],
+                    "Card Type": row["subtype"],
+                    "Card Stats": row["card_stats"],
+                    "Effect": row["effect"],
+                })
+        final_message = message or f"Results exported to {filepath}"
+        if "Partial" in final_message:
+            final_message = final_message.replace(OUTPUT_CSV, str(filepath))
+        print(final_message)
+    except Exception as e:
+        print(f"Failed to export CSV: {e}")
 
 def determine_card_category(x_coord: int, desc_zone_width: float) -> str:
     """Determine card category (Basic/Glossy/Royal) based on count header position"""
@@ -366,8 +482,8 @@ def detect_full_collection_area(win):
     
     return (collection_area_x, collection_area_y, collection_area_w, collection_area_h), (card_width, card_height)
 
-def click_cards_and_extract_info_single_row(win, row_number: int = 1, 
-                                            collection_coords=None, 
+def click_cards_and_extract_info_single_row(win, row_number: int = 1,
+                                            collection_coords=None,
                                             card_dims=None) -> Dict[str, int]:
     """Process a single row of 6 cards, extracting card info"""
     global previous_first_card_name, previous_card_info
@@ -473,7 +589,7 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
         
         try:
             pyautogui.click(click_x, click_y)
-            time.sleep(0.5)  # Reduced from 0.8s
+            time.sleep(CLICK_DESC_DELAY)  # Reduced from 0.8s
             clicked_window_img = grab_region((left, top, width, height))
             desc_zone_img = detect_and_capture_description_zone(clicked_window_img)
             
@@ -491,11 +607,10 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                                              original_dism_x:original_dism_x + refined_width].copy()
                 
                 card_name, count, count_header_x = ocr_description_zone_card_info(
-                    desc_zone_img, card_number=i + 1, row_number=row_number, 
+                    desc_zone_img, card_number=i + 1, row_number=row_number,
                     return_count_header=True
                 )
-                card_rarity = analyze_card_rarity(desc_zone_img, card_number=i + 1, 
-                                                  row_number=row_number)
+                card_rarity = ""
                 dustable_value = analyze_dism_area(dism_area_img)
                 
                 # Phase 2 early termination logic
@@ -520,7 +635,7 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                     desc_zone_width = w_desc
                     if card_name in card_summary:
                         card_summary[card_name][0].append(
-                            (count, count_header_x, desc_zone_width, card_rarity)
+                            [count, count_header_x, desc_zone_width, card_rarity]
                         )
                         card_summary[card_name] = (
                             card_summary[card_name][0],
@@ -528,7 +643,7 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                         )
                     else:
                         card_summary[card_name] = (
-                            [(count, count_header_x, desc_zone_width, card_rarity)],
+                            [[count, count_header_x, desc_zone_width, card_rarity]],
                             dustable_value,
                         )
         except EndOfCollection:
@@ -545,7 +660,7 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
         previous_first_card_name = current_row_first_card
     return card_summary
 
-def process_full_collection_phases(win) -> List[Tuple[str, List[Tuple[int, int, int, str]], int]]:
+def process_full_collection_phases(win) -> List:
     """Process collection in two phases: Phase 1 (rows 1-4), Phase 2 (rows 5+)"""
     collection_coords, card_dims = detect_full_collection_area(win)
     if collection_coords is None or card_dims is None:
@@ -603,8 +718,8 @@ def process_full_collection_phases(win) -> List[Tuple[str, List[Tuple[int, int, 
                         scroll_count = scroll_pattern[idx - 1]
                         for _ in range(scroll_count):
                             pyautogui.scroll(-1)
-                            time.sleep(0.15)  # Reduced from 0.3s
-                    time.sleep(0.8)  # Reduced from 1.5s
+                            time.sleep(SCROLL_DELAY)  # Reduced from 0.3s
+                    time.sleep(AFTER_SCROLL_DELAY)  # Reduced from 1.5s
                 
                 if idx == 7:
                     continue
@@ -650,10 +765,8 @@ def process_full_collection_phases(win) -> List[Tuple[str, List[Tuple[int, int, 
     return cards_in_order
 
 # Output Functions
-def print_card_summary(cards_in_order: List[Tuple[str, List[Tuple[int, int, int, str]], int]]):
+def print_card_summary(cards_in_order: List):
     """Print final card summary with color-coded output"""
-    if not SUMMARY:
-        return
     print("Finished processing cards. Preparing final summary...")
     _ansi_re = re.compile(r"\x1b\[[0-9;]*m")
     def strip_ansi(s: str) -> str:
@@ -703,7 +816,7 @@ def print_card_summary(cards_in_order: List[Tuple[str, List[Tuple[int, int, int,
     
     gem_pack_cards = []
     legacy_pack_cards = []
-    
+
     for idx, (card_name, count_list, dustable_value) in enumerate(cards_in_order):
         if use_canonical_names:
             try:
@@ -717,7 +830,29 @@ def print_card_summary(cards_in_order: List[Tuple[str, List[Tuple[int, int, int,
         else:
             display_name = card_name
             legacy_status = False
-        
+
+        # Get full card info and rarity
+        card_info = get_card_info(canonical_name)
+        card_rarity = get_card_rarity_from_info(card_info)
+        # Update rarity in count_list
+        for item in count_list:
+            item[3] = card_rarity
+
+        # Compute category counts for CSV
+        basic_count = 0
+        glossy_count = 0
+        royal_count = 0
+        for count, x_coord, desc_zone_width, _ in count_list:
+            category = determine_card_category(x_coord, desc_zone_width)
+            if category == "Basic":
+                basic_count += count
+            elif category == "Glossy":
+                glossy_count += count
+            elif category == "Royal":
+                royal_count += count
+        total_copies = sum(count for count, _, _, _ in count_list)
+        copies_str = f"{total_copies} [Basic {basic_count}, Glossy {glossy_count}, Royal {royal_count}]"
+
         counts_str_elems = []
         for count, x_coord, desc_zone_width, rarity in count_list:
             category = determine_card_category(x_coord, desc_zone_width)
@@ -731,20 +866,8 @@ def print_card_summary(cards_in_order: List[Tuple[str, List[Tuple[int, int, int,
                 colored_category = category
             counts_str_elems.append(f"{colored_category} x{count}")
         counts_str = ", ".join(counts_str_elems)
-        
-        first_rarity = "N"
-        if count_list:
-            _, _, _, first_rarity_raw = count_list[0]
-            if isinstance(first_rarity_raw, str):
-                fr = first_rarity_raw
-                if fr in ("N ", "R "):
-                    first_rarity = fr
-                else:
-                    fr_stripped = fr.strip() or "N"
-                    if fr_stripped in ("N", "R"):
-                        first_rarity = fr_stripped + " "
-                    else:
-                        first_rarity = fr_stripped
+
+        first_rarity = card_rarity
         
         rarity_color = rarity_token_to_color(first_rarity)
         visible_token = first_rarity
@@ -763,7 +886,9 @@ def print_card_summary(cards_in_order: List[Tuple[str, List[Tuple[int, int, int,
             "card_total": card_total,
             "first_rarity_token": visible_token,
         }
-        
+
+
+
         if legacy_status:
             legacy_pack_cards.append((idx, card_info))
         else:
@@ -820,17 +945,30 @@ def print_card_summary(cards_in_order: List[Tuple[str, List[Tuple[int, int, int,
     if legacy_pack_cards:
         print(f"Legacy Pack: {len(legacy_pack_cards)} unique cards")
 
+    # Export to CSV if enabled
+    if CSV:
+        csv_data = prepare_csv_data(cards_in_order)
+        if csv_data:
+            write_csv(csv_data)
+
 def signal_handler(sig, frame, cards_in_order_ref=None):
     """Handle Ctrl+C interruption gracefully"""
     print("\n\n=== SCRIPT INTERRUPTED ===")
     print("Processing was cancelled. Here is the summary of cards analyzed so far:")
     print("-" * 50)
-    if cards_in_order_ref and cards_in_order_ref[0]:
-        print_card_summary(cards_in_order_ref[0])
-    elif interruptible_cards:
-        print_card_summary(interruptible_cards)
+    cards = cards_in_order_ref[0] if cards_in_order_ref and cards_in_order_ref[0] else interruptible_cards
+    if SUMMARY:
+        if cards:
+            print_card_summary(cards)
+        else:
+            print("No cards were analyzed before interruption.")
     else:
-        print("No cards were analyzed before interruption.")
+        print("Summary printing disabled.")
+    # Export partial CSV if enabled
+    if CSV and cards:
+        csv_data = prepare_csv_data(cards)
+        if csv_data:
+            write_csv(csv_data, f"Partial results exported to {OUTPUT_CSV}")
     print("\n=== PROCESSING STOPPED ===")
     sys.exit(0)
 
@@ -859,19 +997,27 @@ def main():
     try:
         cards_in_order = process_full_collection_phases(win)
         cards_container[0] = cards_in_order
-        print_card_summary(cards_in_order)
+        if SUMMARY:
+            print_card_summary(cards_in_order)
         print("\n=== Process Complete ===")
         print("The collection scanner has finished processing all rows.")
     except KeyboardInterrupt:
         print("\n\n=== SCRIPT INTERRUPTED ===")
         print("Processing was cancelled. Here is the summary of cards analyzed so far:")
         print("-" * 50)
-        if cards_container[0]:
-            print_card_summary(cards_container[0])
-        elif interruptible_cards:
-            print_card_summary(interruptible_cards)
+        cards = cards_container[0] if cards_container[0] else interruptible_cards
+        if SUMMARY:
+            if cards:
+                print_card_summary(cards)
+            else:
+                print("No cards were analyzed before interruption.")
         else:
-            print("No cards were analyzed before interruption.")
+            print("Summary printing disabled.")
+        # Export partial CSV if enabled
+        if CSV and cards:
+            csv_data = prepare_csv_data(cards)
+            if csv_data:
+                write_csv(csv_data, f"Partial results exported to {OUTPUT_CSV}")
         print("\n=== PROCESSING STOPPED ===")
         return
 
