@@ -10,8 +10,11 @@ import time
 import signal
 import sys
 import re
+import json
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
+from urllib.parse import quote
+import requests
 
 import cv2
 import numpy as np
@@ -23,8 +26,9 @@ import pygetwindow as gw
 # Configuration
 WINDOW_TITLE_KEYWORD = "masterduel"
 OUTPUT_CSV = "collection_output.csv"
-SUMMARY = True
 DEBUG = False
+SUMMARY = True
+CSV = True
 
 # Template cache to avoid repeated loading
 _TEMPLATE_CACHE = {}
@@ -268,47 +272,31 @@ def analyze_dism_area(dism_area_img: np.ndarray) -> int:
         pass
     return 0
 
-def analyze_card_rarity(description_zone_img: np.ndarray, card_number: int = 0, 
-                       row_number: int = 1) -> str:
-    """Analyze card rarity by color detection in specific region"""
-    if description_zone_img is None or description_zone_img.size == 0:
+def get_card_rarity(canonical_name: str) -> str:
+    """Fetch card rarity from YGOPRODECK API using canonical name"""
+    if not canonical_name:
         return "N "
-    h, w = description_zone_img.shape[:2]
-    main_area_h = int(h * 0.28)
-    main_area_w = int(w * 0.375)
-    sub_area_h = int(main_area_h * 0.20)
-    sub_area_w = int(main_area_w * 0.20)
-    sub_area_x = main_area_w - sub_area_w
-    sub_area_y = main_area_h - sub_area_h
-    sub_area_x = max(0, min(sub_area_x, w - 1))
-    sub_area_y = max(0, min(sub_area_y, h - 1))
-    sub_area_w = min(sub_area_w, w - sub_area_x)
-    sub_area_h = min(sub_area_h, h - sub_area_y)
-    
-    if sub_area_h > 0 and sub_area_w > 0:
-        bottom_right_pixel = description_zone_img[sub_area_y + sub_area_h - 1, 
-                                                  sub_area_x + sub_area_w - 1]
-        pixel_bgr = [int(bottom_right_pixel[0]), int(bottom_right_pixel[1]), 
-                     int(bottom_right_pixel[2])]
-    else:
-        pixel_bgr = [128, 128, 128]
-    
-    # Target colors in BGR format
-    target_colors = {
-        (155, 153, 153): "N ",
-        (251, 127, 0): "R ",
-        (0, 159, 253): "SR",
-        (251, 241, 60): "UR"
-    }
-    
-    closest_rarity = "N "
-    min_distance = float('inf')
-    for color, rarity in target_colors.items():
-        distance = sum((pixel_bgr[i] - color[i]) ** 2 for i in range(3)) ** 0.5
-        if distance < min_distance:
-            min_distance = distance
-            closest_rarity = rarity
-    return closest_rarity
+    url = f"https://db.ygoprodeck.com/api/v7/cardinfo.php?name={quote(canonical_name)}&misc=yes"
+    try:
+        r = requests.get(url, timeout=5.0)
+        r.raise_for_status()
+        data = r.json()
+        if "data" in data and data["data"]:
+            misc_info = data["data"][0].get("misc_info", [])
+            for misc in misc_info:
+                if "md_rarity" in misc:
+                    md_rarity = misc["md_rarity"]
+                    if md_rarity == "Common":
+                        return "N "
+                    elif md_rarity == "Rare":
+                        return "R "
+                    elif md_rarity == "Super Rare":
+                        return "SR"
+                    elif md_rarity == "Ultra Rare":
+                        return "UR"
+    except Exception:
+        pass
+    return "N "
 
 def determine_card_category(x_coord: int, desc_zone_width: float) -> str:
     """Determine card category (Basic/Glossy/Royal) based on count header position"""
@@ -366,8 +354,8 @@ def detect_full_collection_area(win):
     
     return (collection_area_x, collection_area_y, collection_area_w, collection_area_h), (card_width, card_height)
 
-def click_cards_and_extract_info_single_row(win, row_number: int = 1, 
-                                            collection_coords=None, 
+def click_cards_and_extract_info_single_row(win, row_number: int = 1,
+                                            collection_coords=None,
                                             card_dims=None) -> Dict[str, int]:
     """Process a single row of 6 cards, extracting card info"""
     global previous_first_card_name, previous_card_info
@@ -491,11 +479,10 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                                              original_dism_x:original_dism_x + refined_width].copy()
                 
                 card_name, count, count_header_x = ocr_description_zone_card_info(
-                    desc_zone_img, card_number=i + 1, row_number=row_number, 
+                    desc_zone_img, card_number=i + 1, row_number=row_number,
                     return_count_header=True
                 )
-                card_rarity = analyze_card_rarity(desc_zone_img, card_number=i + 1, 
-                                                  row_number=row_number)
+                card_rarity = ""
                 dustable_value = analyze_dism_area(dism_area_img)
                 
                 # Phase 2 early termination logic
@@ -520,7 +507,7 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                     desc_zone_width = w_desc
                     if card_name in card_summary:
                         card_summary[card_name][0].append(
-                            (count, count_header_x, desc_zone_width, card_rarity)
+                            [count, count_header_x, desc_zone_width, card_rarity]
                         )
                         card_summary[card_name] = (
                             card_summary[card_name][0],
@@ -528,7 +515,7 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                         )
                     else:
                         card_summary[card_name] = (
-                            [(count, count_header_x, desc_zone_width, card_rarity)],
+                            [[count, count_header_x, desc_zone_width, card_rarity]],
                             dustable_value,
                         )
         except EndOfCollection:
@@ -545,7 +532,7 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
         previous_first_card_name = current_row_first_card
     return card_summary
 
-def process_full_collection_phases(win) -> List[Tuple[str, List[Tuple[int, int, int, str]], int]]:
+def process_full_collection_phases(win) -> List:
     """Process collection in two phases: Phase 1 (rows 1-4), Phase 2 (rows 5+)"""
     collection_coords, card_dims = detect_full_collection_area(win)
     if collection_coords is None or card_dims is None:
@@ -650,7 +637,7 @@ def process_full_collection_phases(win) -> List[Tuple[str, List[Tuple[int, int, 
     return cards_in_order
 
 # Output Functions
-def print_card_summary(cards_in_order: List[Tuple[str, List[Tuple[int, int, int, str]], int]]):
+def print_card_summary(cards_in_order: List):
     """Print final card summary with color-coded output"""
     if not SUMMARY:
         return
@@ -718,6 +705,12 @@ def print_card_summary(cards_in_order: List[Tuple[str, List[Tuple[int, int, int,
             display_name = card_name
             legacy_status = False
         
+        # Get rarity using canonical name
+        card_rarity = get_card_rarity(canonical_name)
+        # Update rarity in count_list
+        for item in count_list:
+            item[3] = card_rarity
+
         counts_str_elems = []
         for count, x_coord, desc_zone_width, rarity in count_list:
             category = determine_card_category(x_coord, desc_zone_width)
@@ -732,19 +725,7 @@ def print_card_summary(cards_in_order: List[Tuple[str, List[Tuple[int, int, int,
             counts_str_elems.append(f"{colored_category} x{count}")
         counts_str = ", ".join(counts_str_elems)
         
-        first_rarity = "N"
-        if count_list:
-            _, _, _, first_rarity_raw = count_list[0]
-            if isinstance(first_rarity_raw, str):
-                fr = first_rarity_raw
-                if fr in ("N ", "R "):
-                    first_rarity = fr
-                else:
-                    fr_stripped = fr.strip() or "N"
-                    if fr_stripped in ("N", "R"):
-                        first_rarity = fr_stripped + " "
-                    else:
-                        first_rarity = fr_stripped
+        first_rarity = card_rarity
         
         rarity_color = rarity_token_to_color(first_rarity)
         visible_token = first_rarity
@@ -825,12 +806,15 @@ def signal_handler(sig, frame, cards_in_order_ref=None):
     print("\n\n=== SCRIPT INTERRUPTED ===")
     print("Processing was cancelled. Here is the summary of cards analyzed so far:")
     print("-" * 50)
-    if cards_in_order_ref and cards_in_order_ref[0]:
-        print_card_summary(cards_in_order_ref[0])
-    elif interruptible_cards:
-        print_card_summary(interruptible_cards)
+    if SUMMARY:
+        if cards_in_order_ref and cards_in_order_ref[0]:
+            print_card_summary(cards_in_order_ref[0])
+        elif interruptible_cards:
+            print_card_summary(interruptible_cards)
+        else:
+            print("No cards were analyzed before interruption.")
     else:
-        print("No cards were analyzed before interruption.")
+        print("Summary printing disabled.")
     print("\n=== PROCESSING STOPPED ===")
     sys.exit(0)
 
@@ -859,19 +843,23 @@ def main():
     try:
         cards_in_order = process_full_collection_phases(win)
         cards_container[0] = cards_in_order
-        print_card_summary(cards_in_order)
+        if SUMMARY:
+            print_card_summary(cards_in_order)
         print("\n=== Process Complete ===")
         print("The collection scanner has finished processing all rows.")
     except KeyboardInterrupt:
         print("\n\n=== SCRIPT INTERRUPTED ===")
         print("Processing was cancelled. Here is the summary of cards analyzed so far:")
         print("-" * 50)
-        if cards_container[0]:
-            print_card_summary(cards_container[0])
-        elif interruptible_cards:
-            print_card_summary(interruptible_cards)
+        if SUMMARY:
+            if cards_container[0]:
+                print_card_summary(cards_container[0])
+            elif interruptible_cards:
+                print_card_summary(interruptible_cards)
+            else:
+                print("No cards were analyzed before interruption.")
         else:
-            print("No cards were analyzed before interruption.")
+            print("Summary printing disabled.")
         print("\n=== PROCESSING STOPPED ===")
         return
 
