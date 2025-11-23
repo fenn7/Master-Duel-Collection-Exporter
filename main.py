@@ -87,8 +87,7 @@ USE_SSIM = True  # use SSIM if available for more robust equality checks
 # -----------------------------------
 
 # Set to True to enable debug output and save debug images
-Debug = True
-
+Debug = False
 
 # Data containers
 @dataclass
@@ -1953,20 +1952,20 @@ def click_cards_and_extract_info_single_row(
 
     # Step 6: FIXED CARD DETECTION - Use reference image approach for reliable card positions
     # Save the full window screenshot for debugging
-    cv2.imwrite("tmp_rovodev_full_window.png", full_window_img)
     if Debug:
+        cv2.imwrite("full_window.png", full_window_img)
         print(
-            f"[click_cards_and_extract_info] Saved full window screenshot as tmp_rovodev_full_window.png"
+            f"[click_cards_and_extract_info] Saved full window screenshot as full_window.png"
         )
 
     # Extract card area based on reference image dimensions
     card_area_img = full_window_img[
         card_area_y : card_area_y + card_area_h, card_area_x : card_area_x + card_area_w
     ]
-    cv2.imwrite("tmp_rovodev_card_area.png", card_area_img)
     if Debug:
+        cv2.imwrite("card_area.png", card_area_img)
         print(
-            f"[click_cards_and_extract_info] Saved card area as tmp_rovodev_card_area.png"
+            f"[click_cards_and_extract_info] Saved card area as card_area.png"
         )
 
     # NEW: Save row_full screenshot with card boundaries like first_row_full.png
@@ -1996,7 +1995,7 @@ def click_cards_and_extract_info_single_row(
         # Phase 1: rows 1-4 - need subdirectories for each row within phase1
         output_dir = Path(f"test_identifier/phase1/row_{row_number:02d}")
     else:
-        # Phase 2: rows 5-12 organized in row_XX subdirectories under phase2
+        # Phase 2: rows 5-12 organized in row subdirectories under phase2
         output_dir = Path(f"test_identifier/phase2/row_{row_number:02d}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3553,20 +3552,42 @@ def print_card_summary(
     cards_in_order: List[Tuple[str, List[Tuple[int, int, int, str]], int]],
 ):
     """
-    CHANGE 3: Print final summary of all cards and counts. Handles duplicate card name aggregation
-    and maintains encounter order. Now displays the Dustable value for each card and card finish
-    categories based on count header X position. Uses description zone width to calculate percentages
-    for card finish classification. Also shows the card rarity with colored output.
-    Additionally checks each card against the canonical database to get the canonical name and legacy pack status.
-    Cards are now split into two sections: "Gem Pack & Structure Deck" and "Legacy Pack".
+    CHANGE 3 (revised): Print final summary of all cards and counts.
+    - Card names are printed with the same colour + boldness as the rarity bracket shown.
+    - Column separators '|' are vertically aligned by computing visible widths (ANSI-aware).
+    - Keeps canonical-name lookup if card_name_matcher is importable.
     """
-    # Import card name matcher functionality
+    import re
+    from pathlib import Path
+
+    print("Preparing Final Card Summary...")
+
+    # Try to import canonical name lookup, fallback if not available
     try:
         from card_name_matcher import get_canonical_name_and_legacy_status
         use_canonical_names = True
-    except ImportError:
-        print("[WARNING] Could not import card_name_matcher. Using original card names.")
+    except Exception:
         use_canonical_names = False
+        print("[WARNING] Could not import card_name_matcher. Using original card names.")
+
+    # Helper: strip ANSI sequences to compute visible length
+    _ansi_re = re.compile(r"\x1b\[[0-9;]*m")
+
+    def strip_ansi(s: str) -> str:
+        if not isinstance(s, str):
+            return ""
+        return _ansi_re.sub("", s)
+
+    def visible_len(s: str) -> int:
+        return len(strip_ansi(s))
+
+    def pad_right_ansi(s: str, width: int) -> str:
+        """Pad s with spaces on right so that visible length == width."""
+        v = visible_len(s)
+        if v >= width:
+            return s
+        return s + (" " * (width - v))
+
     # Filter out cards with empty names
     cards_in_order = [
         (name, cl, dv) for name, cl, dv in cards_in_order if name and name.strip()
@@ -3576,138 +3597,194 @@ def print_card_summary(
         print("No cards were successfully processed.")
         return
 
-    print(f"\n=== FINAL CARD SUMMARY ===")
-    print(f"Found {len(cards_in_order)} unique card(s) in encounter order:")
-    #print("-" * 90)
-
     # ANSI color codes
-    BOLD_WHITE = "\033[1;97m"  # Bold white for card names
     LIGHT_BLUE = "\033[94m"
-    BASIC_COLOR = "\033[30m"
+    BASIC_COLOR = "\033[97m"
     GLOSSY_COLOR = "\033[92m"
     ROYAL_COLOR = "\033[93m"
     LIGHT_RED = "\033[91m"
     RESET = "\033[0m"
-    UNDERLINE_WHITE = "\033[4;97m"  # Underline white for section titles
+    UNDERLINE_WHITE = "\033[4;97m"
 
     # Rarity color codes (bold)
-    RARITY_WHITE = "\033[1;97m"  # Bold white for N (Normal)
-    RARITY_LIGHT_BLUE = "\033[1;96m"  # Bold cyan for R (Rare)
-    RARITY_GOLD = "\033[1;93m"  # Bold gold/yellow for SR (Super Rare)
-    RARITY_DARK_BLUE = "\033[1;94m"  # Bold blue for UR (as closest to dark blue)
-    RARITY_BOLD = "\033[1m"  # Bold for any fallback
+    RARITY_WHITE = "\033[1;97m"   # N
+    RARITY_LIGHT_BLUE = "\033[1;96m"  # R (cyan-ish)
+    RARITY_GOLD = "\033[1;93m"   # SR
+    RARITY_DARK_BLUE = "\033[1;94m"  # UR (blue)
+    RARITY_BOLD = "\033[1m"
 
-    # Separate cards into two lists based on legacy status
+    # Mapping plain rarity token -> color code (for name & bracket)
+    def rarity_token_to_color(token: str) -> str:
+        t = (token or "").strip()
+        if t == "N":
+            return RARITY_WHITE
+        if t == "R":
+            return RARITY_LIGHT_BLUE
+        if t == "SR":
+            return RARITY_GOLD
+        if t == "UR":
+            return RARITY_DARK_BLUE
+        return RARITY_BOLD
+
+    # Separate cards into two lists (gem/legacy) keeping original encounter index
     gem_pack_cards = []
     legacy_pack_cards = []
 
-    for i, (card_name, count_list, dustable_value) in enumerate(cards_in_order):
-        # Only process non-empty card names
-        if card_name and card_name.strip():
-            # Get canonical name and legacy status if enabled
-            if use_canonical_names:
+    # Build intermediate rows with ANSI-coloured fields (but compute visible widths later)
+    for idx, (card_name, count_list, dustable_value) in enumerate(cards_in_order):
+        # canonical lookup
+        if use_canonical_names:
+            try:
                 canonical_name, is_legacy_pack = get_canonical_name_and_legacy_status(card_name)
-                if not canonical_name or canonical_name.strip() == "":
-                    # Fallback to original name if canonical name not found
-                    canonical_name = card_name
-                display_name = canonical_name
-                legacy_status = is_legacy_pack
-            else:
-                display_name = card_name
-                legacy_status = False  # Default to non-legacy if matcher unavailable
+            except Exception:
+                canonical_name, is_legacy_pack = card_name, False
+            if not canonical_name or canonical_name.strip() == "":
+                canonical_name = card_name
+            display_name = canonical_name
+            legacy_status = bool(is_legacy_pack)
+        else:
+            display_name = card_name
+            legacy_status = False
 
-            # Format the count entries with categories
-            # Each count_list entry is (count, x_coord, desc_zone_width, rarity)
-            count_strings = []
-            for count, x_coord, desc_zone_width, rarity in count_list:
-                category = determine_card_category(x_coord, desc_zone_width)
-                # Apply color based on category
-                if category == "Basic":
-                    colored_category = f"{BASIC_COLOR}{category}{RESET}"
-                elif category == "Glossy":
-                    colored_category = f"{GLOSSY_COLOR}{category}{RESET}"
-                elif category == "Royal":
-                    colored_category = f"{ROYAL_COLOR}{category}{RESET}"
+        # Build counts string (these may contain small ANSI colouring)
+        # Each count_list entry expected: (count, x_coord, desc_zone_width, rarity)
+        counts_str_elems = []
+        for count, x_coord, desc_zone_width, rarity in count_list:
+            category = determine_card_category(x_coord, desc_zone_width)
+            if category == "Basic":
+                colored_category = f"{BASIC_COLOR}{category}{RESET}"
+            elif category == "Glossy":
+                colored_category = f"{GLOSSY_COLOR}{category}{RESET}"
+            elif category == "Royal":
+                colored_category = f"{ROYAL_COLOR}{category}{RESET}"
+            else:
+                colored_category = category
+            counts_str_elems.append(f"{colored_category} x{count}")
+        counts_str = ", ".join(counts_str_elems)
+
+        # Determine first rarity token for bracket display; default "N"
+        first_rarity = "N"
+        if count_list:
+            # the stored rarity may be like "N " or "R " or "SR" etc; normalize
+            _, _, _, first_rarity_raw = count_list[0]
+            if isinstance(first_rarity_raw, str):
+                fr = first_rarity_raw
+                # If data already contains the trailing space, keep as-is
+                if fr in ("N ", "R "):
+                    first_rarity = fr
                 else:
-                    colored_category = category
-                count_strings.append(f"{colored_category} x{count}")
+                    # normalize
+                    fr_stripped = fr.strip() or "N"  # fallback to N if empty
+                    # Ensure single-letter rarities display with trailing space as requested
+                    if fr_stripped in ("N", "R"):
+                        first_rarity = fr_stripped + " "
+                    else:
+                        first_rarity = fr_stripped  # SR, UR, etc.
+        # prepare colored rarity bracket (with visible content like "[N]" "[R]" "[SR]" "[UR]")
+        rarity_color = rarity_token_to_color(first_rarity)
+        visible_token = first_rarity  # e.g. "N", "R", "SR", "UR"
+        # Keep a single bracketed token (no trailing spaces) as requested
+        colored_rarity_with_brackets = f"{rarity_color}{RARITY_BOLD}[{visible_token}]{RESET}"
 
-            counts_str = ", ".join(count_strings)
+        # prepare colored name using same rarity color, and bold
+        colored_name = f"{rarity_color}{RARITY_BOLD}{display_name}{RESET}"
 
-            # Extract the rarity from the first count entry to display before the card name
-            first_rarity = "N "  # default
-            if count_list:
-                # Each count_list entry is (count, x_coord, desc_zone_width, rarity)
-                _, _, _, first_rarity = count_list[0]
+        # compute card_total
+        card_total = sum(int(count) for count, _, _, _ in count_list)
 
-            # Apply color to the rarity with brackets
-            if first_rarity == "N ":
-                colored_rarity_with_brackets = f"{RARITY_WHITE}[{first_rarity}]{RESET}"
-            elif first_rarity == "R ":
-                colored_rarity_with_brackets = f"{RARITY_LIGHT_BLUE}[{first_rarity}]{RESET}"
-            elif first_rarity == "SR":
-                colored_rarity_with_brackets = f"{RARITY_GOLD}[{first_rarity}]{RESET}"
-            elif first_rarity == "UR":
-                colored_rarity_with_brackets = f"{RARITY_DARK_BLUE}[{first_rarity}]{RESET}"
-            else:
-                # Fallback: bold the rarity and brackets
-                colored_rarity_with_brackets = f"{RARITY_BOLD}[{first_rarity}]{RESET}"
+        card_info = {
+            "orig_index": idx,
+            "display_name": display_name,
+            "colored_name": colored_name,
+            "plain_name": display_name,
+            "colored_rarity_with_brackets": colored_rarity_with_brackets,
+            "counts_str": counts_str,
+            "dustable_value": dustable_value,
+            "card_total": card_total,
+            "first_rarity_token": visible_token,
+        }
 
-            # Calculate total count for this card
-            card_total = sum(count for count, _, _, _ in count_list)
+        if legacy_status:
+            legacy_pack_cards.append((idx, card_info))
+        else:
+            gem_pack_cards.append((idx, card_info))
 
-            # Add to appropriate list based on legacy status
-            card_info = {
-                'display_name': display_name,
-                'colored_rarity_with_brackets': colored_rarity_with_brackets,
-                'counts_str': counts_str,
-                'dustable_value': dustable_value,
-                'card_total': card_total
-            }
-
-            if legacy_status:
-                legacy_pack_cards.append((i, card_info))  # Keep original index
-            else:
-                gem_pack_cards.append((i, card_info))
-
-    # Print Gem Pack & Structure Deck section
-    # Determine a global width across both sections so indexes align between sections
+    # Determine global index width (keep per-section numbering but pad by combined total width)
     combined_total = max(1, len(gem_pack_cards) + len(legacy_pack_cards))
-    global_width = len(str(combined_total))
+    idx_padding_width = len(str(combined_total))  # number of digits to show
+
+    # Compute column visible widths for alignment
+    # Columns: "<index>. "  "<rarity>" " <name> " | " "COPIES: <counts_str>" " | " "DUSTABLE: x<dust>"
+    # We'll compute widths for: index_col, rarity_col, name_col, copies_col (just counts_str), dust_col (small)
+    all_rows = gem_pack_cards + legacy_pack_cards
+
+    # If there are no rows in a section, still keep minimum widths
+    min_rarity_w = 3  # e.g. [N]
+    min_name_w = 10
+    min_counts_w = 6
+    min_dust_w = 1
+
+    # Determine maximum visible widths across both sections
+    max_rarity_w = min_rarity_w
+    max_name_w = min_name_w
+    max_counts_w = min_counts_w
+    max_dust_w = min_dust_w
+
+    for _, info in all_rows:
+        max_rarity_w = max(max_rarity_w, visible_len(info["colored_rarity_with_brackets"]))
+        max_name_w = max(max_name_w, visible_len(info["colored_name"]))
+        max_counts_w = max(max_counts_w, visible_len(info["counts_str"]))
+        max_dust_w = max(max_dust_w, len(str(info["dustable_value"])))
+
+    # Print header and sections
+    print(f"\n=== FINAL CARD SUMMARY ===")
+    print(f"Found {len(cards_in_order)} unique card(s) in encounter order:")
+
+    # Helper function to print a section given a list of (idx, card_info)
+    def _print_section(title: str, rows):
+        if not rows:
+            return
+        print(f"\n{UNDERLINE_WHITE}{title}{RESET}")
+        for local_idx, (_, info) in enumerate(rows, start=1):
+            # Build index string using per-section numbering but global padding
+            idx_str = str(local_idx).zfill(idx_padding_width)
+            idx_display = f"{idx_str}."
+
+            # Rarity bracket padded to max_rarity_w
+            rarity_field = pad_right_ansi(info["colored_rarity_with_brackets"], max_rarity_w)
+
+            # Name field padded to max_name_w; name already colored+bold
+            name_field = pad_right_ansi(info["colored_name"], max_name_w)
+
+            # Counts field (left-justified) padded to max_counts_w
+            counts_field = pad_right_ansi(info["counts_str"], max_counts_w)
+
+            # Dustable (just print as integer) padded to max_dust_w
+            dust_field = str(info["dustable_value"]).rjust(max_dust_w)
+
+            # Compose: index + space + rarity + space + name + " | " + COPIES section + " | " + DUSTABLE section
+            line = (
+                f"{idx_display} {rarity_field} {name_field} | "
+                f"{LIGHT_BLUE}COPIES{RESET}: {counts_field} | "
+                f"{LIGHT_RED}DUSTABLE{RESET}: x{dust_field}"
+            )
+            print(line)
 
     # Print Gem Pack & Structure Deck section
-    if gem_pack_cards:
-        print(f"\n{UNDERLINE_WHITE}Gem Pack & Structure Deck{RESET}")
-        for idx, (_, card_info) in enumerate(gem_pack_cards, 1):
-            idx_str = str(idx).zfill(global_width)
-            print(
-                f"{idx_str}. {card_info['colored_rarity_with_brackets']} {BOLD_WHITE}{card_info['display_name']}{RESET} | "
-                f"{LIGHT_BLUE}COPIES{RESET}: {card_info['counts_str']} | {LIGHT_RED}DUSTABLE{RESET}: x{card_info['dustable_value']}"
-            )
+    _print_section("Gem Pack & Structure Deck", gem_pack_cards)
 
-    # Print Legacy Pack section if there are legacy cards
-    if legacy_pack_cards:
-        print(f"\n{UNDERLINE_WHITE}Legacy Pack{RESET}")
-        # offset the index base for the legacy section if you want continuity, or restart at 1.
-        # If you want separate numbering in each section (but same width), keep enumerate(..., 1)
-        for idx, (_, card_info) in enumerate(legacy_pack_cards, 1):
-            idx_str = str(idx).zfill(global_width)
-            print(
-                f"{idx_str}. {card_info['colored_rarity_with_brackets']} {BOLD_WHITE}{card_info['display_name']}{RESET} | "
-                f"{LIGHT_BLUE}COPIES{RESET}: {card_info['counts_str']} | {LIGHT_RED}DUSTABLE{RESET}: x{card_info['dustable_value']}"
-            )
+    # Print Legacy Pack section
+    _print_section("Legacy Pack", legacy_pack_cards)
 
-    # Print total statistics
-    total_cards = sum(card_info['card_total'] for _, card_info in gem_pack_cards + legacy_pack_cards)
+    # Totals
+    total_cards = sum(info["card_total"] for _, info in gem_pack_cards + legacy_pack_cards)
     total_unique = len(gem_pack_cards) + len(legacy_pack_cards)
-    # print("-" * 90)
     print(f"Total unique cards: {total_unique}")
     print(f"Total card count: {total_cards}")
     if gem_pack_cards:
         print(f"Gem Pack & Structure Deck: {len(gem_pack_cards)} unique cards")
     if legacy_pack_cards:
         print(f"Legacy Pack: {len(legacy_pack_cards)} unique cards")
-
 
 def determine_card_category(x_coord: int, desc_zone_width: float) -> str:
     """
@@ -3744,15 +3821,15 @@ def cleanup_temp_files():
     """Remove ALL temporary debugging files created during execution."""
     import glob
 
-    # Find all tmp_rovodev_* files in current directory
-    temp_files = glob.glob("tmp_rovodev_*")
+    # Find all * files in current directory
+    temp_files = glob.glob("*")
 
     # Add specific known temporary files that might not match the pattern
     additional_temp_files = [
-        "tmp_rovodev_full_window.png",
-        "tmp_rovodev_card_area.png",
-        "tmp_rovodev_name_region_debug.png",
-        "tmp_rovodev_name_gray_debug.png",
+        "full_window.png",
+        "card_area.png",
+        "name_region_debug.png",
+        "name_gray_debug.png",
     ]
 
     # Combine and deduplicate
@@ -4631,7 +4708,7 @@ def main():
         print("The enhanced collection scanner has finished processing all rows.")
         print("Check the output above for the complete card summary with counts.")
         print(
-            "Images were saved to test_identifier/phase1/ and test_identifier/phase2/row_XX/ directories."
+            "Images were saved to test_identifier/phase1/row_XX and test_identifier/phase2/row_XX/ directories."
         )
 
     except KeyboardInterrupt:
@@ -4652,7 +4729,8 @@ def main():
         return
 
     # Cleanup temporary files
-    cleanup_temp_files()
+    if Debug:
+        cleanup_temp_files()
 
 
 if __name__ == "__main__":
