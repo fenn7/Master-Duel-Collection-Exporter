@@ -24,9 +24,9 @@ import pyautogui
 import pygetwindow as gw
 
 # Configuration
-SCROLL_DELAY = 0.1 # 0.15
-BETWEEN_ROW_DELAY = 0.2 # 0.8
-CLICK_DESC_DELAY = 0.1 # 0.5
+SCROLL_DELAY = 0 # 0.15 # delay between each consecutive scroll in the scroll pattern
+AFTER_SCROLL_DELAY = 0.1 # 0.8 # delay after large scroll down onto a new row of cards
+CLICK_DESC_DELAY = 0 # 0.5 # delay between clicking a card and the next card
 WINDOW_TITLE_KEYWORD = "masterduel"
 OUTPUT_CSV = "collection_output"
 DEBUG = False
@@ -387,7 +387,7 @@ def prepare_csv_data(cards_in_order) -> List:
             "card_type": card_type,
             "subtype": card_info.get("humanReadableCardType", ""),
             "card_stats": card_stats,
-            "effect": card_info.get("desc", ""),
+            "effect": card_info.get("desc", "").replace("\n", " ").replace("\r", " "),
         }
         csv_data.append(csv_row)
     return csv_data
@@ -719,7 +719,7 @@ def process_full_collection_phases(win) -> List:
                         for _ in range(scroll_count):
                             pyautogui.scroll(-1)
                             time.sleep(SCROLL_DELAY)  # Reduced from 0.3s
-                    time.sleep(BETWEEN_ROW_DELAY)  # Reduced from 1.5s
+                    time.sleep(AFTER_SCROLL_DELAY)  # Reduced from 1.5s
                 
                 if idx == 7:
                     continue
