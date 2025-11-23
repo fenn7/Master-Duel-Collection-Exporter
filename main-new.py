@@ -23,7 +23,8 @@ import pygetwindow as gw
 # Configuration
 WINDOW_TITLE_KEYWORD = "masterduel"
 OUTPUT_CSV = "collection_output.csv"
-Debug = False
+SUMMARY = True
+DEBUG = False
 
 # Template cache to avoid repeated loading
 _TEMPLATE_CACHE = {}
@@ -89,7 +90,7 @@ def grab_region(region: Tuple[int, int, int, int]) -> np.ndarray:
                 img_bgr = arr.copy()
             return img_bgr
     except Exception as e:
-        if Debug:
+        if DEBUG:
             print(f"Screen capture failed for region {region}: {e}")
         raise
 
@@ -337,7 +338,7 @@ def detect_full_collection_area(win):
     try:
         full_window_img = grab_region((left, top, width, height))
     except Exception as e:
-        if Debug:
+        if DEBUG:
             print(f"Failed to grab window region: {e}")
         return None, None
     
@@ -651,6 +652,8 @@ def process_full_collection_phases(win) -> List[Tuple[str, List[Tuple[int, int, 
 # Output Functions
 def print_card_summary(cards_in_order: List[Tuple[str, List[Tuple[int, int, int, str]], int]]):
     """Print final card summary with color-coded output"""
+    if not SUMMARY:
+        return
     print("Finished processing cards. Preparing final summary...")
     _ansi_re = re.compile(r"\x1b\[[0-9;]*m")
     def strip_ansi(s: str) -> str:

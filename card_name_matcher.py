@@ -1,72 +1,44 @@
 #!/usr/bin/env python3
 """
-ygo_match_legacy_verbose_urls.py
+Card Name Matcher - Optimized Version
 
-Fuzzy-match a Yu-Gi-Oh! card name and check MasterDuelMeta Legacy Pack + Master Duel rarity.
-This variant prints every attempted MasterDuelMeta URL and the HTTP response details so you can monitor failures.
-
-Usage:
-    python ygo_match_legacy_verbose_urls.py "call of the hantd"
+Fuzzy-match Yu-Gi-Oh! card names to canonical forms and check Legacy Pack status.
+Optimized for speed with aggressive caching and minimal network requests.
 """
 
-import argparse
 import json
-import os
-import sys
-import time
-import unicodedata
-import re
 from pathlib import Path
 from typing import Dict, Tuple, Optional
-
+from urllib.parse import quote
 import requests
 from rapidfuzz import process, fuzz
 
-# ---------------------------------------------------------------------
-# Configuration / filenames
-# ---------------------------------------------------------------------
-Debug = False
-
+# Configuration
 YGOPRODECK_API = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
 CARDS_CACHE = Path("cache/ygo_cards_cache.json")
 LEGACY_CACHE = Path("cache/legacy_cache.json")
+REQUEST_TIMEOUT = 6.0
+HEADERS = {"User-Agent": "ygo-collection-tool/1.0"}
+Debug = False
 
-SCORER = fuzz.WRatio
-REQUEST_TIMEOUT = 12.0
-HEADERS = {"User-Agent": "ygo-collection-tool/1.0 (+https://github.com/you)"}
+# Module-level cache to avoid repeated file I/O
+_CARDS_MAP_CACHE = None
+_LEGACY_CACHE = None
 
-
-# ---------------------------------------------------------------------
-# Utilities
-# ---------------------------------------------------------------------
-def normalize_text(s: str) -> str:
-    s = s or ""
-    s = s.strip()
-    s = unicodedata.normalize("NFKD", s)
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    s = " ".join(s.split())
-    return s.lower()
-
-
-# ---------------------------------------------------------------------
-# Fetch / cache canonical names from YGOPRODECK
-# ---------------------------------------------------------------------
 def fetch_or_load_cards() -> Dict[str, Dict]:
+    """Load canonical card names from cache or fetch from API"""
+    global _CARDS_MAP_CACHE
+    if _CARDS_MAP_CACHE is not None:
+        return _CARDS_MAP_CACHE
+    
     if CARDS_CACHE.exists():
         try:
             with CARDS_CACHE.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-            if Debug:
-                print(f"[cards] Loaded {len(data)} entries from cache {CARDS_CACHE}")
-            return data
-        except Exception as e:
-            if Debug:
-                print(
-                    f"[cards] Failed to read cache ({e}), will attempt fresh download."
-                )
-
-    if Debug:
-        print("[cards] Downloading canonical card list from YGOPRODeck...")
+                _CARDS_MAP_CACHE = json.load(f)
+            return _CARDS_MAP_CACHE
+        except Exception:
+            pass
+    
     try:
         r = requests.get(YGOPRODECK_API, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         r.raise_for_status()
@@ -75,188 +47,92 @@ def fetch_or_load_cards() -> Dict[str, Dict]:
         mapping = {}
         for entry in raw:
             name = entry.get("name") or entry.get("cardname") or entry.get("card_name")
-            if not name:
-                continue
-            mapping[name] = {"id": entry.get("id"), "name": name, "raw": entry}
+            if name:
+                mapping[name] = {"id": entry.get("id"), "name": name}
         CARDS_CACHE.parent.mkdir(parents=True, exist_ok=True)
         with CARDS_CACHE.open("w", encoding="utf-8") as f:
             json.dump(mapping, f, ensure_ascii=False, indent=1)
-        if Debug:
-            print(
-                f"[cards] Downloaded and cached {len(mapping)} card entries to {CARDS_CACHE}"
-            )
+        _CARDS_MAP_CACHE = mapping
         return mapping
-    except Exception as e:
-        if Debug:
-            print(f"[cards] ERROR: failed download: {e}")
+    except Exception:
         if CARDS_CACHE.exists():
-            if Debug:
-                print("[cards] Falling back to existing cache file.")
             with CARDS_CACHE.open("r", encoding="utf-8") as f:
-                return json.load(f)
+                _CARDS_MAP_CACHE = json.load(f)
+            return _CARDS_MAP_CACHE
         raise
 
-
-# ---------------------------------------------------------------------
-# RapidFuzz matcher
-# ---------------------------------------------------------------------
 class CanonicalMatcher:
+    """Fast fuzzy matcher using RapidFuzz"""
     def __init__(self, names):
         self.names = list(names)
-        self._norm_cache = {n: normalize_text(n) for n in self.names}
-
+    
     def match(self, query: str) -> Tuple[Optional[str], float]:
+        """Return best matching canonical name and confidence score"""
         if not query or not self.names:
             return None, 0.0
-        best = process.extractOne(query, self.names, scorer=SCORER, score_cutoff=0)
+        best = process.extractOne(query, self.names, scorer=fuzz.WRatio, score_cutoff=0)
         if best is None:
             return None, 0.0
         matched_name, score, _ = best
         return matched_name, float(score)
 
+def load_legacy_cache() -> Dict[str, bool]:
+    """Load legacy pack status cache from disk"""
+    global _LEGACY_CACHE
+    if _LEGACY_CACHE is not None:
+        return _LEGACY_CACHE
+    
+    if LEGACY_CACHE.exists():
+        try:
+            data = json.loads(LEGACY_CACHE.read_text(encoding="utf-8"))
+            _LEGACY_CACHE = {k: v.get("legacy", False) for k, v in data.items()}
+            return _LEGACY_CACHE
+        except Exception:
+            pass
+    _LEGACY_CACHE = {}
+    return _LEGACY_CACHE
 
-def match_card_name(query: str) -> Tuple[str, bool]:
-    """
-    Match a card name to its canonical form and check if it's in the Legacy Pack.
-    Returns (canonical_name, is_legacy_pack)
-    """
-    cards_map = fetch_or_load_cards()
-    canonical_names = list(cards_map.keys())
-    if not canonical_names:
-        return "", False
-    matcher = CanonicalMatcher(canonical_names)
-    best_name, score = matcher.match(query)
-    if not best_name:
-        return "", False
-    legacy_cache = load_legacy_cache()
-    in_legacy = is_in_legacy_pack_masterduelmeta(best_name, legacy_cache)
-    return best_name, in_legacy
+def save_legacy_cache(cache: Dict[str, bool]):
+    """Persist legacy pack status cache to disk"""
+    try:
+        LEGACY_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        data = {k: {"legacy": v} for k, v in cache.items()}
+        LEGACY_CACHE.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception:
+        pass
 
+def is_in_legacy_pack(card_name: str, cache: Dict[str, bool]) -> bool:
+    """Check if card is in Legacy Pack via MasterDuelMeta scraping"""
+    if card_name in cache:
+        return cache[card_name]
+    
+    url = f"https://www.masterduelmeta.com/cards/{quote(card_name)}"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+        if r.status_code == 404:
+            return False
+        r.raise_for_status()
+        in_legacy = "Legacy Pack" in r.text
+        cache[card_name] = in_legacy
+        save_legacy_cache(cache)
+        return in_legacy
+    except Exception:
+        return False
 
 def get_canonical_name_and_legacy_status(card_name: str) -> Tuple[str, bool]:
     """
-    Given a card name, return its canonical name and legacy pack status.
-    This function is designed for use in main.py's print_card_summary function.
+    Match card name to canonical form and determine legacy pack status.
+    Returns (canonical_name, is_legacy_pack)
     """
-    return match_card_name(card_name)
-
-
-# ---------------------------------------------------------------------
-# MasterDuelMeta: determine Legacy Pack membership AND Master Duel rarity
-# (verbose: prints attempted URL and response info)
-# ---------------------------------------------------------------------
-def load_legacy_cache() -> Dict[str, Dict]:
-    if LEGACY_CACHE.exists():
-        try:
-            return json.loads(LEGACY_CACHE.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-    return {}
-
-
-def save_legacy_cache(cache: Dict):
-    try:
-        LEGACY_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        LEGACY_CACHE.write_text(
-            json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8"
-        )
-    except Exception as e:
-        if Debug:
-            print(f"[legacy] Warning: failed to save legacy cache: {e}")
-
-
-def is_in_legacy_pack_masterduelmeta(card_name: str, cache: Dict) -> bool:
-    """
-    Checks MasterDuelMeta for legacy pack membership and returns legacy_bool.
-    This verbose variant prints the attempted URL and the HTTP response status/resolved URL.
-    """
-    if card_name in cache:
-        entry = cache[card_name]
-        return bool(entry.get("legacy", False))
-
-    from urllib.parse import quote
-
-    url_encoded = quote(card_name)
-    url = f"https://www.masterduelmeta.com/cards/{url_encoded}"
-
-    try:
-        r = requests.get(
-            url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True
-        )
-    except Exception as e:
-        # Do not cache on failure
-        return False
-
-    if r.status_code == 404:
-        # Do not cache on failure
-        return False
-
-    try:
-        r.raise_for_status()
-    except Exception as e:
-        # Do not cache on failure
-        return False
-
-    html = r.text
-
-    # quick detect legacy
-    in_legacy = "Legacy Pack" in html or "Legacy pack" in html or "Legacy Pack" in html
-
-    cache[card_name] = {"legacy": bool(in_legacy)}
-    save_legacy_cache(cache)
-    return bool(in_legacy)
-
-
-# ---------------------------------------------------------------------
-# CLI entrypoint
-# ---------------------------------------------------------------------
-def main():
-    global Debug
-    p = argparse.ArgumentParser(
-        description="Fuzzy-match a Yu-Gi-Oh! card name and check MasterDuelMeta Legacy Pack + MD rarity (verbose URLs)."
-    )
-    p.add_argument(
-        "query", nargs="+", help="Input string to match to a canonical card name"
-    )
-    p.add_argument(
-        "--no-network",
-        action="store_true",
-        help="Do not attempt network fetch (use caches only)",
-    )
-    args = p.parse_args()
-
-    query_raw = " ".join(args.query).strip()
-    if not query_raw:
-        print("Empty query.")
-        sys.exit(2)
-
-    print(f"[input] Query: {query_raw!r}")
-
-    if args.no_network and not CARDS_CACHE.exists():
-        print("[error] --no-network requested but no local cards cache available.")
-        sys.exit(2)
-
-    cards_map = (
-        fetch_or_load_cards()
-        if not args.no_network
-        else json.loads(CARDS_CACHE.read_text(encoding="utf-8"))
-    )
-    canonical_names = list(cards_map.keys())
-    if not canonical_names:
-        print("[error] No canonical card names available.")
-        sys.exit(1)
-
-    matcher = CanonicalMatcher(canonical_names)
-    best_name, score = matcher.match(query_raw)
+    cards_map = fetch_or_load_cards()
+    if not cards_map:
+        return "", False
+    
+    matcher = CanonicalMatcher(list(cards_map.keys()))
+    best_name, score = matcher.match(card_name)
     if not best_name:
-        print("[result] No match found.")
-        sys.exit(0)
-
-    print(f"[match] Best canonical name: {best_name!r}  score={score:.2f} (0-100)")
-
+        return "", False
+    
     legacy_cache = load_legacy_cache()
-    in_legacy = is_in_legacy_pack_masterduelmeta(best_name, legacy_cache)
-    print(f"[legacy] In Legacy Pack? {in_legacy}")
-
-if __name__ == "__main__":
-    main()
+    in_legacy = is_in_legacy_pack(best_name, legacy_cache)
+    return best_name, in_legacy
