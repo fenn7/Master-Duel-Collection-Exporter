@@ -7,6 +7,7 @@ Optimized for speed with aggressive caching and minimal network requests.
 """
 
 import json
+import sys
 from pathlib import Path
 from typing import Dict, Tuple, Optional
 from urllib.parse import quote
@@ -19,7 +20,6 @@ CARDS_CACHE = Path("cache/ygo_cards_cache.json")
 LEGACY_CACHE = Path("cache/legacy_cache.json")
 REQUEST_TIMEOUT = 6.0
 HEADERS = {"User-Agent": "ygo-collection-tool/1.0"}
-Debug = False
 
 # Module-level cache to avoid repeated file I/O
 _CARDS_MAP_CACHE = None
@@ -127,12 +127,22 @@ def get_canonical_name_and_legacy_status(card_name: str) -> Tuple[str, bool]:
     cards_map = fetch_or_load_cards()
     if not cards_map:
         return "", False
-    
+
     matcher = CanonicalMatcher(list(cards_map.keys()))
     best_name, score = matcher.match(card_name)
     if not best_name:
         return "", False
-    
+
     legacy_cache = load_legacy_cache()
     in_legacy = is_in_legacy_pack(best_name, legacy_cache)
     return best_name, in_legacy
+
+if __name__ == "__main__":
+    """Command-line interface for card name matching"""
+    if len(sys.argv) > 1:
+        card_name = " ".join(sys.argv[1:])
+        canonical, legacy = get_canonical_name_and_legacy_status(card_name)
+        print(f"Canonical Name: {canonical}")
+        print(f"Legacy Pack: {legacy}")
+    else:
+        print("Usage: python card_name_matcher.py <card name>")
