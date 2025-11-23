@@ -10,7 +10,6 @@ import time
 import signal
 import sys
 import re
-import json
 import datetime
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
@@ -25,6 +24,9 @@ import pyautogui
 import pygetwindow as gw
 
 # Configuration
+SCROLL_DELAY = 0.1 # 0.15
+BETWEEN_ROW_DELAY = 0.2 # 0.8
+CLICK_DESC_DELAY = 0.1 # 0.5
 WINDOW_TITLE_KEYWORD = "masterduel"
 OUTPUT_CSV = "collection_output"
 DEBUG = False
@@ -347,15 +349,45 @@ def prepare_csv_data(cards_in_order) -> List:
             visible_token = first_rarity + " "
         else:
             visible_token = first_rarity
+        # Determine Card Type based on frameType
+        frame_type = card_info.get("frameType", "")
+        if frame_type == "trap":
+            card_type = "Trap"
+        elif frame_type == "spell":
+            card_type = "Spell"
+        else:
+            card_type = "Monster"
+
+        # Card Stats
+        card_stats = ""
+        if card_info.get("type") not in ["Trap Card", "Spell Card"]:
+            if frame_type == "xyz":
+                level = card_info.get("level", "")
+                card_stats = f" Rank {level}, "
+            elif frame_type == "link":
+                linkval = card_info.get("linkval", "")
+                card_stats = f" Link {linkval}, "
+            else:
+                level = card_info.get("level", "")
+                card_stats = f" Level {level}, "
+            attribute = card_info.get("attribute", "")
+            race = card_info.get("race", "")
+            atk = card_info.get("atk", "")
+            def_val = card_info.get("def")
+            def_str = "-" if def_val is None else str(def_val)
+            card_stats += f"{attribute}, {race}, {atk}/{def_str}"
+
         csv_row = {
             "rarity": visible_token,
             "name": display_name,
             "legacy": "Yes" if legacy_status else "No",
             "copies": copies_str,
             "dustable": dustable_value,
-            "archetype": card_info.get("archetype", ""),
-            "card_type": card_info.get("type", ""),
+            "archetype": card_info.get("archetype") or None,
+            "card_type": card_type,
             "subtype": card_info.get("humanReadableCardType", ""),
+            "card_stats": card_stats,
+            "effect": card_info.get("desc", ""),
         }
         csv_data.append(csv_row)
     return csv_data
@@ -372,20 +404,20 @@ def write_csv(csv_data, message=None):
         filename = f"{base_name}_{timestamp}.csv"
         filepath = csv_dir / filename
         with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=["Rarity", "Name", "From Legacy Pack?", "Copies", "Dustable Copies", "Archetype", "Card Type", "Card Subtype", "Card Stats", "Effect"])
+            writer = csv.DictWriter(csvfile, fieldnames=["Rarity", "Name", "Legacy Pack", "Copies", "Dustable", "Archetype", "Card Frame", "Card Type", "Card Stats", "Effect"])
             writer.writeheader()
             for row in csv_data:
                 writer.writerow({
                     "Rarity": row["rarity"],
                     "Name": row["name"],
-                    "From Legacy Pack?": row["legacy"],
+                    "Legacy Pack": row["legacy"],
                     "Copies": row["copies"],
-                    "Dustable Copies": row["dustable"],
+                    "Dustable": row["dustable"],
                     "Archetype": row["archetype"],
-                    "Card Type": row["card_type"],
-                    "Card Subtype": row["subtype"],
-                    "Card Stats": "",
-                    "Effect": "",
+                    "Card Frame": row["card_type"],
+                    "Card Type": row["subtype"],
+                    "Card Stats": row["card_stats"],
+                    "Effect": row["effect"],
                 })
         final_message = message or f"Results exported to {filepath}"
         if "Partial" in final_message:
@@ -557,7 +589,7 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
         
         try:
             pyautogui.click(click_x, click_y)
-            time.sleep(0.5)  # Reduced from 0.8s
+            time.sleep(CLICK_DESC_DELAY)  # Reduced from 0.8s
             clicked_window_img = grab_region((left, top, width, height))
             desc_zone_img = detect_and_capture_description_zone(clicked_window_img)
             
@@ -686,8 +718,8 @@ def process_full_collection_phases(win) -> List:
                         scroll_count = scroll_pattern[idx - 1]
                         for _ in range(scroll_count):
                             pyautogui.scroll(-1)
-                            time.sleep(0.15)  # Reduced from 0.3s
-                    time.sleep(0.8)  # Reduced from 1.5s
+                            time.sleep(SCROLL_DELAY)  # Reduced from 0.3s
+                    time.sleep(BETWEEN_ROW_DELAY)  # Reduced from 1.5s
                 
                 if idx == 7:
                     continue
