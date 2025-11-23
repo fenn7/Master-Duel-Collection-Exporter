@@ -77,7 +77,7 @@ CARD_ASPECT_MIN = 0.6
 CARD_ASPECT_MAX = 1.6
 OCR_CONF_THRESHOLD = 60  # fuzzy match score threshold for automatic mapping
 SCROLL_PIXELS = -700  # negative for scrolling down with pyautogui.scroll
-STABILIZATION_WAIT = 0.45  # seconds to wait after scroll before capture
+STABILIZATION_WAIT = 0.1  # seconds to wait after scroll before capture
 MAX_CONSECUTIVE_NO_NEW = 4  # stop if no new cards found after this many scrolls
 OUTPUT_CSV = "collection_output.csv"
 
