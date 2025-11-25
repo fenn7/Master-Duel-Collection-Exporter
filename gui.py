@@ -10,11 +10,15 @@ class MasterDuelExporterApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Master Duel Collection Exporter")
-        self.root.geometry("500x750")
-        self.root.minsize(500, 700)
+        self.root.geometry("500x750")  # Increased height to accommodate checkboxes
+        self.root.minsize(500, 750)  # Increased minimum height
         
         # Track if a scan is in progress
         self.scan_in_progress = False
+        
+        # Initialize checkbox variables
+        self.debug_mode = None
+        self.print_summary = None
         
         # Configure terminal text tags for colors
         self.terminal = None  # Will be initialized in create_new_collection
@@ -79,10 +83,10 @@ class MasterDuelExporterApp:
         )
         new_btn.pack(pady=10)
         
-        # Load Existing Collection Button
+        # Load a Collection Button
         load_btn = ttk.Button(
             button_frame,
-            text="Load Existing Collection CSV",
+            text="Load a Collection CSV",
             command=self.load_existing_collection,
             width=25
         )
@@ -183,6 +187,36 @@ class MasterDuelExporterApp:
             padding=(5, 5, 5, 5)
         ).pack(anchor='w')
         
+        # Options frame for checkboxes
+        options_frame = ttk.Frame(self.main_frame)
+        options_frame.pack(fill='x', padx=50, pady=(20, 10))
+
+        # Configure grid for centering
+        options_frame.columnconfigure(0, weight=1)
+        options_frame.columnconfigure(1, weight=0)
+        options_frame.columnconfigure(2, weight=0)
+        options_frame.columnconfigure(3, weight=1)
+
+        # Debug Mode checkbox
+        self.debug_mode = tk.BooleanVar(value=False)
+        debug_check = ttk.Checkbutton(
+            options_frame,
+            text="Debug Mode",
+            variable=self.debug_mode,
+            command=self.log_debug_mode
+        )
+        debug_check.grid(row=0, column=1, padx=20)
+
+        # Print Summary checkbox
+        self.print_summary = tk.BooleanVar(value=False)
+        summary_check = ttk.Checkbutton(
+            options_frame,
+            text="Print Summary",
+            variable=self.print_summary,
+            command=self.log_print_summary
+        )
+        summary_check.grid(row=0, column=2, padx=20)
+        
         # Button frame for Start/Stop
         button_frame = ttk.Frame(self.main_frame)
         button_frame.pack(fill='x', padx=50, pady=10)
@@ -241,7 +275,7 @@ class MasterDuelExporterApp:
         self.update_status("Ready to start a new export.")
 
     def load_existing_collection(self):
-        """Handle Load Existing Collection button click"""
+        """Handle Load a Collection button click"""
         self.clear_frame()
         
         # Header frame for back button and title
@@ -251,7 +285,7 @@ class MasterDuelExporterApp:
         # Title centered in the frame
         title = ttk.Label(
             header_frame,
-            text="Load Existing Collection",
+            text="Load a Collection",
             style='Title.TLabel',
             anchor='center'
         )
@@ -431,7 +465,21 @@ class MasterDuelExporterApp:
     def update_status(self, message: str):
         """Update the status message and log it"""
         self.log(f"Status: {message}", "info")
-        
+
+    def log_debug_mode(self):
+        """Log debug mode toggle"""
+        if self.debug_mode.get():
+            self.log("Debug mode ENABLED", "info")
+        else:
+            self.log("Debug mode DISABLED", "info")
+
+    def log_print_summary(self):
+        """Log print summary toggle"""
+        if self.print_summary.get():
+            self.log("Print summary ENABLED", "info")
+        else:
+            self.log("Print summary DISABLED", "info")
+
     def stop_collection_scan(self):
         """Handle the stop collection scan button click"""
         if self.scan_in_progress:
