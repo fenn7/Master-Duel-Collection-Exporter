@@ -112,16 +112,17 @@ class MasterDuelExporterApp:
         
         # Header frame for back button and title
         header_frame = ttk.Frame(self.main_frame)
-        header_frame.pack(fill='x', pady=(0, 20))
+        header_frame.pack(fill='x', pady=(0, 14))  # Reduced from 20 to 14 (30% less)
 
         # Title centered in the frame
         title = ttk.Label(
             header_frame,
             text="Create New Collection",
             style='Title.TLabel',
-            anchor='center'
+            anchor='center',
+            padding=(0, 0, 0, 0)  # No padding here, controlled by pack
         )
-        title.pack(expand=True, fill='x')
+        title.pack(expand=True, fill='x', pady=(0, 2))  # Reduced bottom padding to 2
 
         # Back button placed on the left
         back_btn = ttk.Button(
@@ -135,13 +136,14 @@ class MasterDuelExporterApp:
         info = ttk.Label(
             self.main_frame,
             text="Save your Master Duel collection to a new CSV file.",
-            style='Subtitle.TLabel'
+            style='Subtitle.TLabel',
+            padding=(0, 0, 0, 0)  # No padding here
         )
-        info.pack(pady=10)
+        info.pack(pady=(0, 7))  # Only bottom padding of 7
         
         # Save location frame
         save_frame = ttk.Frame(self.main_frame)
-        save_frame.pack(fill='x', padx=50, pady=15)
+        save_frame.pack(fill='x', padx=35, pady=7)  # Reduced padding by 30%
         
         # Save location label
         ttk.Label(save_frame, text="Select save folder:").pack(anchor='w')
@@ -167,9 +169,9 @@ class MasterDuelExporterApp:
         instructions_frame = ttk.LabelFrame(
             self.main_frame,
             text="INSTRUCTIONS",
-            padding=10
+            padding=7  # Reduced from 10 to 7
         )
-        instructions_frame.pack(fill='x', padx=20, pady=(20, 10))
+        instructions_frame.pack(fill='x', padx=14, pady=(14, 7))  # Reduced padding by 30%
         
         instructions_text = (
             "1. Open Master Duel and click on the \"Deck\" button. \n"
@@ -189,7 +191,7 @@ class MasterDuelExporterApp:
         
         # Options frame for checkboxes
         options_frame = ttk.Frame(self.main_frame)
-        options_frame.pack(fill='x', padx=50, pady=(20, 10))
+        options_frame.pack(fill='x', padx=35, pady=(14, 7))  # Reduced padding by 30%
 
         # Configure grid for centering
         options_frame.columnconfigure(0, weight=1)
@@ -219,15 +221,15 @@ class MasterDuelExporterApp:
         
         # Button frame for Start/Stop
         button_frame = ttk.Frame(self.main_frame)
-        button_frame.pack(fill='x', padx=50, pady=10)
+        button_frame.pack(fill='x', padx=35, pady=7)  # Reduced padding by 30%
         
         # Store buttons as instance variables for state management
         self.start_btn = ttk.Button(
             button_frame,
             text="Start Collection Scan",
             command=self.start_collection_scan,
-            style='TButton',
-            padding=10
+            style='Small.TButton',
+            padding=5
         )
         self.start_btn.pack(side='left', expand=True, padx=5)
         
@@ -235,8 +237,8 @@ class MasterDuelExporterApp:
             button_frame,
             text="Stop Current Scan",
             command=self.stop_collection_scan,
-            style='TButton',
-            padding=10,
+            style='Small.TButton',
+            padding=5,
             state='disabled'  # Disabled by default
         )
         self.stop_btn.pack(side='right', expand=True, padx=5)
@@ -245,9 +247,9 @@ class MasterDuelExporterApp:
         terminal_frame = ttk.LabelFrame(
             self.main_frame,
             text="EXECUTION LOG",
-            padding=5
+            padding=4  # Reduced from 5 to 4
         )
-        terminal_frame.pack(fill='both', expand=True, padx=20, pady=(10, 20))
+        terminal_frame.pack(fill='both', expand=True, padx=14, pady=(7, 14))  # Reduced padding by 30%
         
         # Create text widget for terminal output
         self.terminal = tk.Text(
@@ -280,7 +282,7 @@ class MasterDuelExporterApp:
         
         # Header frame for back button and title
         header_frame = ttk.Frame(self.main_frame)
-        header_frame.pack(fill='x', pady=(0, 20))
+        header_frame.pack(fill='x', pady=(0, 14))
 
         # Title centered in the frame
         title = ttk.Label(
