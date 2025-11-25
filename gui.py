@@ -25,9 +25,9 @@ class MasterDuelExporterApp:
         
         # Set application icon if available
         try:
-            icon_path = Path(__file__).parent / "icon.ico"
-            if icon_path.exists():
-                self.root.iconbitmap(str(icon_path))
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'favicon.ico')
+            if os.path.exists(icon_path):
+                self.root.iconbitmap(icon_path)
         except Exception as e:
             print(f"Could not load icon: {e}")
 
@@ -141,16 +141,17 @@ class MasterDuelExporterApp:
         )
         info.pack(pady=(0, 7))  # Only bottom padding of 7
         
-        # Save location frame
-        save_frame = ttk.Frame(self.main_frame)
-        save_frame.pack(fill='x', padx=35, pady=7)  # Reduced padding by 30%
-        
-        # Save location label
-        ttk.Label(save_frame, text="Select save folder:").pack(anchor='w')
+        # Save location frame with label frame
+        save_selector_frame = ttk.LabelFrame(
+            self.main_frame,
+            text="Select save folder:",
+            padding=4
+        )
+        save_selector_frame.pack(fill='x', padx=35, pady=7)  # Matches other pages
         
         # Save location entry and browse button
-        entry_frame = ttk.Frame(save_frame)
-        entry_frame.pack(fill='x', pady=(5, 0))
+        entry_frame = ttk.Frame(save_selector_frame)
+        entry_frame.pack(fill='x', padx=5, pady=5)
         
         self.save_entry = ttk.Entry(entry_frame)
         self.save_entry.insert(0, self.save_path)
@@ -282,7 +283,7 @@ class MasterDuelExporterApp:
         
         # Header frame for back button and title
         header_frame = ttk.Frame(self.main_frame)
-        header_frame.pack(fill='x', pady=(0, 14))
+        header_frame.pack(fill='x', pady=(0, 14))  # Matches create page
 
         # Title centered in the frame
         title = ttk.Label(
@@ -291,7 +292,7 @@ class MasterDuelExporterApp:
             style='Title.TLabel',
             anchor='center'
         )
-        title.pack(expand=True, fill='x')
+        title.pack(expand=True, fill='x', pady=(0, 2))  # Matches create page
 
         # Back button placed on the left
         back_btn = ttk.Button(
@@ -302,16 +303,25 @@ class MasterDuelExporterApp:
         )
         back_btn.place(x=0, y=0, anchor='nw')
         
+        # Info text with reduced bottom padding
         info = ttk.Label(
             self.main_frame,
             text="Select an existing collection CSV file to view or edit:",
             style='Subtitle.TLabel'
         )
-        info.pack(pady=10)
+        info.pack(pady=(0, 7))  # Reduced from 10 to 7 to match create page
         
-        # File selection
-        file_frame = ttk.Frame(self.main_frame)
-        file_frame.pack(pady=20, fill='x', padx=50)
+        # File selection frame with consistent padding
+        file_selector_frame = ttk.LabelFrame(
+            self.main_frame,
+            text="Select saved collection:",
+            padding=4
+        )
+        file_selector_frame.pack(fill='x', padx=35, pady=7)  # Matches create page
+        
+        # File entry and browse button
+        file_frame = ttk.Frame(file_selector_frame)
+        file_frame.pack(fill='x', padx=5, pady=5)
         
         self.file_entry = ttk.Entry(file_frame)
         self.file_entry.pack(side='left', fill='x', expand=True, padx=(0, 5))
@@ -325,15 +335,20 @@ class MasterDuelExporterApp:
         )
         browse_btn.pack(side='right')
         
-        # Load button
+        # Load button with consistent styling
+        button_frame = ttk.Frame(self.main_frame)
+        button_frame.pack(fill='x', padx=35, pady=7)  # Matches create page
+        
         load_btn = ttk.Button(
-            self.main_frame,
+            button_frame,
             text="Load Collection",
             command=lambda: self.load_collection_file(self.file_entry.get()),
-            style='TButton'
+            style='Small.TButton',
+            padding=5
         )
-        load_btn.pack(pady=20)
+        load_btn.pack(expand=True)
         
+        # Status message at the bottom
         self.update_status("Select a collection file to load")
 
     def browse_file(self):
