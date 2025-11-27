@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import subprocess
 from typing import Optional
+import threading
 
 class MasterDuelExporterApp:
     def __init__(self, root):
@@ -15,10 +16,13 @@ class MasterDuelExporterApp:
         
         # Track if a scan is in progress
         self.scan_in_progress = False
-        
+
         # Initialize checkbox variables
         self.debug_mode = None
         self.print_summary = None
+
+        # Process for scanning
+        self.process = None
         
         # Configure terminal text tags for colors
         self.terminal = None  # Will be initialized in create_new_collection
@@ -379,44 +383,7 @@ class MasterDuelExporterApp:
             self.save_entry.delete(0, tk.END)
             self.save_entry.insert(0, directory)
 
-    def start_collection_scan(self):
-        """Start the collection scanning process"""
-        try:
-            save_path = self.save_entry.get().strip()
-            if not save_path:
-                messagebox.showerror("Error", "Please specify a save location")
-                return
-                
-                # Ensure the path is a directory and exists
-            if os.path.isfile(save_path):
-                # If it's a file, use its parent directory
-                save_path = os.path.dirname(save_path)
-                
-            # Ensure the directory exists
-            try:
-                os.makedirs(save_path, exist_ok=True)
-            except Exception as e:
-                messagebox.showerror("Error", f"Could not create directory: {str(e)}")
-                return
-            
-            self.update_status("Starting collection scan...")
-            
-            # For now, just show a message with the save path
-            messagebox.showinfo(
-                "Scan Started", 
-                f"The collection scan has started.\n\n"
-                f"The collection will be saved to:\n{save_path}\n\n"
-                "Please keep the Master Duel window visible."
-            )
-            
-            # Here you would call your existing main() function with the save path
-            # For example:
-            # from main_new_better import main
-            # main(output_path=save_path)
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"An error occurred: {str(e)}")
-            self.update_status("Error during scan")
+
 
     def load_collection_file(self, filepath):
         """Load an existing collection file"""
@@ -443,11 +410,15 @@ class MasterDuelExporterApp:
 
     def log(self, message: str, level: str = "info"):
         """Add a message to the terminal with specified log level
-        
+
         Args:
             message: The message to display
             level: Log level ('info', 'warning', 'error')
         """
+        if self.terminal is None:
+            print(f"[{level.upper()}] {message}")
+            return
+
         # Map log levels to colors
         colors = {
             'info': '#00ff00',  # Green
@@ -455,27 +426,27 @@ class MasterDuelExporterApp:
             'error': '#ff0000',  # Red
             'debug': '#00ffff'   # Cyan
         }
-        
+
         # Get current time
         from datetime import datetime
         timestamp = datetime.now().strftime("%H:%M:%S")
-        
+
         # Format the message with timestamp and log level
         log_message = f"[{timestamp}] {message}\n"
-        
+
         # Enable text widget for editing
         self.terminal.configure(state='normal')
-        
+
         # Insert the message with appropriate color
         self.terminal.insert('end', f"[{timestamp}] ", 'timestamp')
         self.terminal.insert('end', f"{message}\n", level)
-        
+
         # Auto-scroll to bottom
         self.terminal.see('end')
-        
+
         # Disable text widget to prevent user editing
         self.terminal.configure(state='disabled')
-        
+
         # Also print to console for debugging
         print(f"[{level.upper()}] {log_message}", end='')
     
@@ -497,14 +468,7 @@ class MasterDuelExporterApp:
         else:
             self.log("Print summary DISABLED", "info")
 
-    def stop_collection_scan(self):
-        """Handle the stop collection scan button click"""
-        if self.scan_in_progress:
-            self.scan_in_progress = False
-            self.log("Scan stopped by user", "warning")
-            self.start_btn['state'] = 'normal'
-            self.stop_btn['state'] = 'disabled'
-            # Add any additional cleanup code here when scan is stopped
+
             
     def start_collection_scan(self):
         """Start the collection scanning process"""
@@ -534,21 +498,23 @@ class MasterDuelExporterApp:
             self.scan_in_progress = True
             self.start_btn['state'] = 'disabled'
             self.stop_btn['state'] = 'normal'
-            
+
             self.log("Initializing collection scan...", "info")
 
-            # For now, just show a message with the save path
-            messagebox.showinfo(
-                "Scan Started",
-                f"The collection scan has started.\n\n"
-                f"The collection will be saved to:\n{save_path}\n\n"
-                "Please keep the Master Duel window visible."
-            )
-            
-            # Here you would normally start the actual scanning process
-            # For now, we'll simulate it with after()
-            # self.root.after(5000, self.simulate_scan_completion)
-            
+            # Prepare command
+            cmd = [sys.executable, '-u', 'main-new-better.py']
+            if self.debug_mode.get():
+                cmd.append('--debug')
+            if not self.print_summary.get():
+                cmd.append('--no-summary')
+            cmd.extend(['--output-dir', save_path])
+
+            # Start subprocess
+            self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=os.getcwd())
+
+            # Start thread to read output
+            threading.Thread(target=self.read_output, daemon=True).start()
+
         except Exception as e:
             self.update_status(f"Error: {str(e)}")
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
@@ -556,6 +522,27 @@ class MasterDuelExporterApp:
             self.start_btn['state'] = 'normal'
             self.stop_btn['state'] = 'disabled'
         self.root.update_idletasks()
+
+    def read_output(self):
+        """Read output from subprocess and log to terminal"""
+        for line in iter(self.process.stdout.readline, ''):
+            self.log(line.strip())
+        self.process.stdout.close()
+        self.process.wait()
+        # Reset UI
+        self.scan_in_progress = False
+        self.start_btn['state'] = 'normal'
+        self.stop_btn['state'] = 'disabled'
+        self.log("Scan completed.")
+
+    def stop_collection_scan(self):
+        """Handle the stop collection scan button click"""
+        if self.scan_in_progress and self.process:
+            self.process.terminate()
+            self.log("Scan stopped by user", "warning")
+        self.scan_in_progress = False
+        self.start_btn['state'] = 'normal'
+        self.stop_btn['state'] = 'disabled'
 
 def main():
     root = tk.Tk()

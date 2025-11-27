@@ -20,6 +20,7 @@ import mss
 import pyautogui
 import pygetwindow as gw
 import requests
+import argparse
 
 # Configuration
 SCROLL_DELAY = 0
@@ -30,6 +31,7 @@ OUTPUT_CSV = "collection_output"
 DEBUG = False
 SUMMARY = True
 CSV = True
+OUTPUT_DIR = "collection_csv"
 # Template cache
 _TEMPLATE_CACHE = {}
 # Global state for interruption handling
@@ -573,14 +575,14 @@ def write_csv(csv_data, message=None):
     print("Saving collection to CSV file...")
     try:
         import csv
-        csv_dir = Path("collection_csv")
+        csv_dir = Path(OUTPUT_DIR)
         csv_dir.mkdir(exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_[%H%M]")
         filename = f"{OUTPUT_CSV}_{timestamp}.csv"
         filepath = csv_dir / filename
         with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=[
-                "Rarity", "Name", "Legacy Pack", "Copies", "Dustable", 
+                "Rarity", "Name", "Legacy Pack", "Copies", "Dustable",
                 "Archetype", "Card Frame", "Card Type", "Card Stats", "Effect"
             ])
             writer.writeheader()
@@ -772,28 +774,45 @@ def update_interruptible_cards(cards_in_order):
 
 def main():
     """Main entry point - process Master Duel collection"""
+    parser = argparse.ArgumentParser(description="Master Duel Collection Exporter")
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    parser.add_argument('--no-summary', action='store_true', help='Disable summary printing')
+    parser.add_argument('--output-dir', default='collection_csv', help='Output directory for CSV files')
+    args = parser.parse_args()
+
+    global DEBUG, SUMMARY, OUTPUT_DIR
+    DEBUG = args.debug
+    SUMMARY = not args.no_summary
+    OUTPUT_DIR = args.output_dir
+
     print("Starting Master Duel Collection Exporter...")
-    print("- Phase 1: Process first 4 rows without scrolling")
-    print("- Phase 2: Process remaining rows with scrolling")
-    print("Press Ctrl+C at any time to stop and see current results.")
+    sys.stdout.flush()
+    print("Processing collection visually via scrolling...")
+    sys.stdout.flush()
     cards_container = [[]]
     signal.signal(signal.SIGINT, lambda sig, frame: signal_handler(sig, frame, cards_container))
     win = find_game_window()
     if not win:
         print("Could not find Master Duel window. Please ensure the game is open and visible.")
         return
-    print("Game window found. Starting card detection and clicking process...")
+    print("Game window found. Starting card detection and analysis...")
+    sys.stdout.flush()
     try:
         cards_in_order = process_full_collection_phases(win)
         cards_container[0] = cards_in_order
         if SUMMARY:
             print_card_summary(cards_in_order)
         print("\n=== Process Complete ===")
+        sys.stdout.flush()
         print("The collection scanner has finished processing all rows.")
+        sys.stdout.flush()
     except KeyboardInterrupt:
         print("\n\n=== SCRIPT INTERRUPTED ===")
+        sys.stdout.flush()
         print("Processing was cancelled. Here is the summary of cards analyzed so far:")
+        sys.stdout.flush()
         print("-" * 50)
+        sys.stdout.flush()
         cards = cards_container[0] if cards_container[0] else interruptible_cards
         if SUMMARY:
             if cards:
@@ -807,6 +826,7 @@ def main():
             if csv_data:
                 write_csv(csv_data, f"Partial results exported to {OUTPUT_CSV}")
         print("\n=== PROCESSING STOPPED ===")
+        sys.stdout.flush()
         return
 
 if __name__ == "__main__":
