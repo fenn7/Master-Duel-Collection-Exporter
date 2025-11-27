@@ -636,7 +636,7 @@ class MasterDuelExporterApp:
         """Handle the stop collection scan button click"""
         if self.scan_in_progress and self.process:
             self.process.terminate()
-            self.log("Scan stopped by user", "warning")
+            self.log("Scan stopped by user.", "warning")
         self.scan_in_progress = False
         self.start_btn['state'] = 'normal'
         self.stop_btn['state'] = 'disabled'

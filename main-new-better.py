@@ -24,7 +24,6 @@ import requests
 import argparse
 
 # Configuration
-SCROLL_PIXELS = -700
 SCROLL_DELAY = 0
 AFTER_SCROLL_DELAY = 0.2
 CLICK_DESC_DELAY = 0
@@ -408,7 +407,7 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                     total_cards_detected += 1
                     if DEBUG:
                         print(f"Row {row_number}, Card {i+1}: {GLOSSY_COLOR}NAME{RESET}: '{card_name}', {LIGHT_BLUE}COPIES{RESET}: {count}, {LIGHT_RED}DUSTABLE{RESET}: {dustable_value}")
-                        print(f"{RARITY_GOLD}Cards Found{RESET}: {total_cards_detected}")
+                        print(f"{RARITY_GOLD}Card Entries Found{RESET}: {total_cards_detected}")
                     desc_zone_width = w_desc
                     if card_name in card_summary:
                         card_summary[card_name][0].append(
@@ -484,7 +483,7 @@ def process_full_collection_phases(win) -> List:
                     if idx - 1 < len(scroll_pattern):
                         scroll_count = scroll_pattern[idx - 1]
                         for _ in range(scroll_count):
-                            pyautogui.scroll(SCROLL_PIXELS) # add back if scrolling is too little
+                            pyautogui.scroll(-1)
                             time.sleep(SCROLL_DELAY)
                     time.sleep(AFTER_SCROLL_DELAY)
                 if idx == 7:
