@@ -597,6 +597,8 @@ class MasterDuelExporterApp:
             stripped = clean_line.strip()
             if stripped == "=== FINAL CARD SUMMARY ===":
                 summary_mode = True
+            elif "Preparing CSV file data" in stripped:
+                summary_mode = False
             elif stripped == "=== Process Complete ===":
                 summary_mode = False
             if summary_mode:
