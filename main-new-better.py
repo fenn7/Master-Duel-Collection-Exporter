@@ -15,6 +15,7 @@ from typing import List, Tuple, Optional, Dict
 from urllib.parse import quote
 import cv2
 import numpy as np
+from main import SCROLL_PIXELS
 import pytesseract
 import mss
 import pyautogui
@@ -392,7 +393,7 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                     total_cards_detected += 1
                     if DEBUG:
                         print(f"Row {row_number}, position {i+1}: name='{card_name}', count={count}, dustable={dustable_value}")
-                        print(f"Total cards found: {total_cards_detected}")
+                        print(f"Unique cards found: {total_cards_detected}")
                     desc_zone_width = w_desc
                     if card_name in card_summary:
                         card_summary[card_name][0].append(
@@ -468,7 +469,7 @@ def process_full_collection_phases(win) -> List:
                     if idx - 1 < len(scroll_pattern):
                         scroll_count = scroll_pattern[idx - 1]
                         for _ in range(scroll_count):
-                            # pyautogui.scroll(-1)
+                            pyautogui.scroll(SCROLL_PIXELS) # add back if scrolling is too little
                             time.sleep(SCROLL_DELAY)
                     time.sleep(AFTER_SCROLL_DELAY)
                 if idx == 7:
