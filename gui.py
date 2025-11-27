@@ -6,6 +6,58 @@ import sys
 import subprocess
 from typing import Optional
 import threading
+import re
+
+def parse_ansi(text: str) -> tuple[str, list[tuple[int, int, str]]]:
+    """Parse ANSI escape sequences and return clean text with tag ranges."""
+    ansi_re = re.compile(r'\x1b\[[0-9;]*m')
+    clean_parts = []
+    tag_ranges = []
+    pos = 0
+    current_tag = None
+    last_end = 0
+    for match in ansi_re.finditer(text):
+        start, end = match.span()
+        # Text before this code
+        if start > last_end:
+            clean_parts.append(text[last_end:start])
+            if current_tag:
+                tag_ranges.append((pos, pos + (start - last_end), current_tag))
+            pos += start - last_end
+        # Update tag
+        code = match.group()
+        if code == '\x1b[0m':
+            current_tag = None
+        elif code == '\x1b[94m':
+            current_tag = 'blue'
+        elif code == '\x1b[97m':
+            current_tag = 'white'
+        elif code == '\x1b[92m':
+            current_tag = 'green'
+        elif code == '\x1b[93m':
+            current_tag = 'yellow'
+        elif code == '\x1b[91m':
+            current_tag = 'red'
+        elif code == '\x1b[96m':
+            current_tag = 'cyan'
+        elif code == '\x1b[1;97m':
+            current_tag = 'bold_white'
+        elif code == '\x1b[1;96m':
+            current_tag = 'bold_cyan'
+        elif code == '\x1b[1;93m':
+            current_tag = 'bold_yellow'
+        elif code == '\x1b[1;94m':
+            current_tag = 'bold_blue'
+        elif code == '\x1b[4;97m':
+            current_tag = 'underline_white'
+        last_end = end
+    # Remaining text
+    if last_end < len(text):
+        clean_parts.append(text[last_end:])
+        if current_tag:
+            tag_ranges.append((pos, pos + (len(text) - last_end), current_tag))
+    clean_text = ''.join(clean_parts)
+    return clean_text, tag_ranges
 
 class MasterDuelExporterApp:
     def __init__(self, root):
@@ -260,7 +312,7 @@ class MasterDuelExporterApp:
         self.terminal = tk.Text(
             terminal_frame,
             bg='black',
-            fg='#00ff00',  # Green text
+            fg='white',  # White text
             font=('Consolas', 10),
             wrap=tk.WORD,
             height=10,
@@ -268,11 +320,24 @@ class MasterDuelExporterApp:
             padx=5,
             pady=5
         )
-        
+
+        # Configure ANSI color tags
+        self.terminal.tag_configure('blue', foreground='#0080ff')
+        self.terminal.tag_configure('white', foreground='white')
+        self.terminal.tag_configure('green', foreground='#00ff00')
+        self.terminal.tag_configure('yellow', foreground='#ffff00')
+        self.terminal.tag_configure('red', foreground='#ff0000')
+        self.terminal.tag_configure('cyan', foreground='#00ffff')
+        self.terminal.tag_configure('bold_white', foreground='white', font=('Consolas', 10, 'bold'))
+        self.terminal.tag_configure('bold_cyan', foreground='#00ffff', font=('Consolas', 10, 'bold'))
+        self.terminal.tag_configure('bold_yellow', foreground='#ffff00', font=('Consolas', 10, 'bold'))
+        self.terminal.tag_configure('bold_blue', foreground='#0080ff', font=('Consolas', 10, 'bold'))
+        self.terminal.tag_configure('underline_white', foreground='white', underline=True)
+
         # Add scrollbar
         scrollbar = ttk.Scrollbar(terminal_frame, orient='vertical', command=self.terminal.yview)
         self.terminal.configure(yscrollcommand=scrollbar.set)
-        
+
         # Pack the scrollbar and terminal
         scrollbar.pack(side='right', fill='y')
         self.terminal.pack(side='left', fill='both', expand=True)
@@ -525,8 +590,38 @@ class MasterDuelExporterApp:
 
     def read_output(self):
         """Read output from subprocess and log to terminal"""
+        from datetime import datetime
+        summary_mode = False
         for line in iter(self.process.stdout.readline, ''):
-            self.log(line.strip())
+            clean_line, ranges = parse_ansi(line)
+            stripped = clean_line.strip()
+            if stripped == "=== FINAL CARD SUMMARY ===":
+                summary_mode = True
+            elif stripped == "=== Process Complete ===":
+                summary_mode = False
+            if summary_mode:
+                full_line = clean_line
+                ts_end = 0
+            else:
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                ts_prefix = f"[{timestamp}] "
+                full_line = ts_prefix + clean_line
+                ts_end = len(ts_prefix)
+            self.terminal.configure(state='normal')
+            start_idx = self.terminal.index('end-1c')
+            self.terminal.insert('end', full_line)
+            if not summary_mode:
+                # Apply timestamp tag
+                self.terminal.tag_add('timestamp', f"{start_idx}+0c", f"{start_idx}+{ts_end}c")
+            # Apply ANSI tags, adjusted for prefix
+            for s, e, tag in ranges:
+                adj_s = s + ts_end
+                adj_e = e + ts_end
+                tag_start = f"{start_idx}+{adj_s}c"
+                tag_end = f"{start_idx}+{adj_e}c"
+                self.terminal.tag_add(tag, tag_start, tag_end)
+            self.terminal.see('end')
+            self.terminal.configure(state='disabled')
         self.process.stdout.close()
         self.process.wait()
         # Reset UI

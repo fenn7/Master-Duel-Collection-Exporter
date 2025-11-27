@@ -742,7 +742,7 @@ def print_card_summary(cards_in_order: List):
         print(f"Gem Pack & Structure Deck: {len(gem_pack_cards)} unique cards")
     if legacy_pack_cards:
         print(f"Legacy Pack: {len(legacy_pack_cards)} unique cards")
-
+    print("")
 
 def signal_handler(sig, frame, cards_in_order_ref=None):
     """Handle Ctrl+C interruption and save partial results"""
