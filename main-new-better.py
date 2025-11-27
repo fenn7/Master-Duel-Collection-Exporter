@@ -38,6 +38,7 @@ _TEMPLATE_CACHE = {}
 interruptible_cards = []
 previous_first_card_name = None
 previous_card_info = {}
+total_cards_detected = 0
 
 class EndOfCollection(Exception):
     """Raised when end-of-collection is detected"""
@@ -369,6 +370,8 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                 if row_number > 4:
                     if i == 0:
                         if previous_first_card_name is not None and card_name == previous_first_card_name:
+                            if DEBUG:
+                                print(f"End of collection detected: repeated first card '{card_name}' in row {row_number}")
                             previous_card_info = {}
                             raise EndOfCollection(partial=card_summary)
                         current_row_first_card = card_name
@@ -376,6 +379,8 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                         if (i - 1) in previous_card_info:
                             prev_name, prev_header_x = previous_card_info[i - 1]
                             if card_name == prev_name and count_header_x == prev_header_x:
+                                if DEBUG:
+                                    print(f"End of collection detected: repeated card '{card_name}' at position {i+1} in row {row_number}")
                                 previous_card_info = {}
                                 raise EndOfCollection(partial=card_summary)
                     if i < 5:
@@ -383,6 +388,11 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                     elif i == 5:
                         previous_card_info = {}
                 if card_name:
+                    global total_cards_detected
+                    total_cards_detected += 1
+                    if DEBUG:
+                        print(f"Row {row_number}, position {i+1}: name='{card_name}', count={count}, dustable={dustable_value}")
+                        print(f"Total cards found: {total_cards_detected}")
                     desc_zone_width = w_desc
                     if card_name in card_summary:
                         card_summary[card_name][0].append(
@@ -794,6 +804,8 @@ def main():
         return
     print("Game window found. Starting card detection and analysis...")
     sys.stdout.flush()
+    global total_cards_detected
+    total_cards_detected = 0
     try:
         cards_in_order = process_full_collection_phases(win)
         cards_container[0] = cards_in_order
