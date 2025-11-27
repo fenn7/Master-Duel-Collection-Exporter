@@ -11,6 +11,7 @@ import sys
 import re
 import datetime
 from pathlib import Path
+from tkinter.font import BOLD
 from typing import List, Tuple, Optional, Dict
 from urllib.parse import quote
 import cv2
@@ -25,7 +26,7 @@ import argparse
 
 # Configuration
 SCROLL_DELAY = 0
-AFTER_SCROLL_DELAY = 0.1
+AFTER_SCROLL_DELAY = 0.2
 CLICK_DESC_DELAY = 0
 WINDOW_TITLE_KEYWORD = "masterduel"
 OUTPUT_CSV = "collection_output"
@@ -33,6 +34,20 @@ DEBUG = False
 SUMMARY = True
 CSV = True
 OUTPUT_DIR = "collection_csv"
+# ANSI color codes
+LIGHT_BLUE = "\033[94m"
+LIGHT_RED = "\033[91m"
+UNDERLINE = "\033[4m"
+RESET = "\033[0m"
+BASIC_COLOR = "\033[97m"
+GLOSSY_COLOR = "\033[92m"
+ROYAL_COLOR = "\033[93m"
+UNDERLINE_WHITE = "\033[4;97m"
+RARITY_WHITE = "\033[1;97m"
+RARITY_LIGHT_BLUE = "\033[1;96m"
+RARITY_GOLD = "\033[1;93m"
+RARITY_DARK_BLUE = "\033[1;94m"
+RARITY_BOLD = "\033[1m"
 # Template cache
 _TEMPLATE_CACHE = {}
 # Global state for interruption handling
@@ -392,8 +407,8 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                     global total_cards_detected
                     total_cards_detected += 1
                     if DEBUG:
-                        print(f"Row {row_number}, position {i+1}: name='{card_name}', count={count}, dustable={dustable_value}")
-                        print(f"Unique cards found: {total_cards_detected}")
+                        print(f"Row {row_number}, Card {i+1}: {RARITY_GOLD}NAME{RESET}: '{card_name}', {LIGHT_BLUE}COPIES{RESET}: {count}, {LIGHT_RED}DUSTABLE{RESET}: {dustable_value}")
+                        print(f"{RARITY_GOLD}Cards Found{RESET}: {total_cards_detected}")
                     desc_zone_width = w_desc
                     if card_name in card_summary:
                         card_summary[card_name][0].append(
@@ -620,18 +635,6 @@ def write_csv(csv_data, message=None):
 def print_card_summary(cards_in_order: List):
     """Print final card summary with color-coded output"""
     print("Finished processing cards. Preparing final summary...")
-    LIGHT_BLUE = "\033[94m"
-    BASIC_COLOR = "\033[97m"
-    GLOSSY_COLOR = "\033[92m"
-    ROYAL_COLOR = "\033[93m"
-    LIGHT_RED = "\033[91m"
-    RESET = "\033[0m"
-    UNDERLINE_WHITE = "\033[4;97m"
-    RARITY_WHITE = "\033[1;97m"
-    RARITY_LIGHT_BLUE = "\033[1;96m"
-    RARITY_GOLD = "\033[1;93m"
-    RARITY_DARK_BLUE = "\033[1;94m"
-    RARITY_BOLD = "\033[1m"
     _ansi_re = re.compile(r"\x1b\[[0-9;]*m")
     def strip_ansi(s: str) -> str:
         return _ansi_re.sub("", s) if isinstance(s, str) else ""
