@@ -504,7 +504,7 @@ def process_full_collection_phases(win) -> List:
 
 def prepare_csv_data(cards_in_order) -> List:
     """Prepare CSV data from cards_in_order list"""
-    print("Preparing CSV file data...")
+    print("Finished processing cards. Preparing CSV file data...")
     csv_data = []
     try:
         from card_name_matcher import get_canonical_name_and_legacy_status
@@ -742,10 +742,7 @@ def print_card_summary(cards_in_order: List):
         print(f"Gem Pack & Structure Deck: {len(gem_pack_cards)} unique cards")
     if legacy_pack_cards:
         print(f"Legacy Pack: {len(legacy_pack_cards)} unique cards")
-    if CSV:
-        csv_data = prepare_csv_data(cards_in_order)
-        if csv_data:
-            write_csv(csv_data)
+
 
 def signal_handler(sig, frame, cards_in_order_ref=None):
     """Handle Ctrl+C interruption and save partial results"""
@@ -802,9 +799,13 @@ def main():
         cards_container[0] = cards_in_order
         if SUMMARY:
             print_card_summary(cards_in_order)
+        if CSV:
+            csv_data = prepare_csv_data(cards_in_order)
+            if csv_data:
+                write_csv(csv_data)
         print("\n=== Process Complete ===")
         sys.stdout.flush()
-        print("The collection scanner has finished processing all rows.")
+        print("The collection scanner has finished processing all cards!")
         sys.stdout.flush()
     except KeyboardInterrupt:
         print("\n\n=== SCRIPT INTERRUPTED ===")

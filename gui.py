@@ -11,7 +11,7 @@ class MasterDuelExporterApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Master Duel Collection Exporter")
-        self.root.geometry("500x750")  # Increased height to accommodate checkboxes
+        self.root.geometry("500x750+0+0")  # Increased height to accommodate checkboxes
         self.root.minsize(500, 750)  # Increased minimum height
         
         # Track if a scan is in progress
@@ -533,7 +533,7 @@ class MasterDuelExporterApp:
         self.scan_in_progress = False
         self.start_btn['state'] = 'normal'
         self.stop_btn['state'] = 'disabled'
-        self.log("Scan completed.")
+        self.log("Execution completed.")
 
     def stop_collection_scan(self):
         """Handle the stop collection scan button click"""
