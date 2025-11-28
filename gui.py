@@ -7,6 +7,10 @@ import subprocess
 from typing import Optional
 import threading
 import re
+import time
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 try:
     import win32com.client as win32
     HAS_WIN32 = True
@@ -102,7 +106,7 @@ class MasterDuelExporterApp:
         
         # Configure terminal text tags
         if hasattr(self, 'terminal') and self.terminal:
-            self.terminal.tag_configure('timestamp', foreground='#808080')  # Gray
+            self.terminal.tag_configure('timestamp', foreground='#999999')  # Gray
             self.terminal.tag_configure('info', foreground='#00ff00')  # Green
             self.terminal.tag_configure('warning', foreground='#ffff00')  # Yellow
             self.terminal.tag_configure('error', foreground='#ff0000')  # Red
@@ -332,7 +336,7 @@ class MasterDuelExporterApp:
         )
 
         # Configure ANSI color tags
-        self.execution_terminal.tag_configure('timestamp', foreground='#404040')
+        self.execution_terminal.tag_configure('timestamp', foreground='#999999')
         self.execution_terminal.tag_configure('info', foreground='white')
         self.execution_terminal.tag_configure('warning', foreground='#ffff00')
         self.execution_terminal.tag_configure('error', foreground='#ff0000')
@@ -455,8 +459,8 @@ class MasterDuelExporterApp:
         )
 
         # Configure tags
-        self.load_terminal.tag_configure('timestamp', foreground='#404040')  # Darker gray
-        self.load_terminal.tag_configure('info', foreground='white')  # White
+        self.load_terminal.tag_configure('timestamp', foreground='#999999')  
+        self.load_terminal.tag_configure('info', foreground='white')
         self.load_terminal.tag_configure('warning', foreground='#ffff00')  # Yellow
         self.load_terminal.tag_configure('error', foreground='#ff0000')  # Red
 
@@ -521,71 +525,132 @@ class MasterDuelExporterApp:
         self._open_file(filepath)
 
     def _open_file(self, filepath):
-        """Open the file in Excel or default app"""
-        filepath = os.path.abspath(filepath)
-        try:
-            if HAS_WIN32:
-                import time
-                excel = win32.gencache.EnsureDispatch('Excel.Application')
-                wb = excel.Workbooks.Open(filepath)
-                ws = wb.Worksheets(1)
-                wb.Activate()
-                ws.Activate()
-                time.sleep(1)  # Allow loading
-                ws.Cells.Select()
-                ws.Columns.AutoFit()
-                excel.Visible = True
-                self.load_log("Opened in Excel with AutoFit applied", "info")
-            else:
-                os.startfile(filepath)
-                self.load_log("Opened with default application", "info")
-        except Exception as e:
-            self.load_log(f"Failed to open file: {str(e)}", "error")
-
-    def log(self, message: str, level: str = "info"):
-        """Add a message to the terminal with specified log level
-
-        Args:
-            message: The message to display
-            level: Log level ('info', 'warning', 'error')
         """
-        if self.execution_terminal is None:
-            print(f"[{level.upper()}] {message}")
-            return
+        Open CSV in Excel by converting to an autofit XLSX and launching it.
+        Writes <originalname>.xlsx next to the CSV and opens it with the OS default app.
+        """
+        filepath = os.path.abspath(filepath)
 
-        # Map log levels to colors
-        colors = {
-            'info': '#00ff00',  # Green
-            'warning': '#ffff00',  # Yellow
-            'error': '#ff0000',  # Red
-            'debug': '#00ffff'   # Cyan
-        }
+        try:
+            base, ext = os.path.splitext(filepath)
+            ext = (ext or "").lower()
 
-        # Get current time
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%H:%M:%S")
+            # If already an xlsx, just open it directly
+            if ext in (".xlsx", ".xlsm", ".xls"):
+                try:
+                    os.startfile(filepath)
+                    self.load_log("Opened existing Excel file", "info")
+                    return
+                except Exception:
+                    # fallback to generic opener
+                    try:
+                        import subprocess, sys
+                        if sys.platform.startswith("darwin"):
+                            subprocess.call(["open", filepath])
+                        else:
+                            subprocess.call(["xdg-open", filepath])
+                        self.load_log("Opened existing spreadsheet with default application", "info")
+                        return
+                    except Exception as e:
+                        self.load_log(f"Failed to open existing spreadsheet: {e}", "error")
+                        return
 
-        # Format the message with timestamp and log level
-        log_message = f"[{timestamp}] {message}\n"
+            # Build output xlsx path
+            out_xlsx = f"{base}.xlsx"
 
-        # Enable text widget for editing
-        self.execution_terminal.configure(state='normal')
+            # Read CSV robustly (try utf-8 then latin-1)
+            read_err = None
+            try:
+                df = pd.read_csv(filepath, dtype=str, keep_default_na=False, na_values=[])
+            except Exception as e_utf:
+                read_err = e_utf
+                try:
+                    df = pd.read_csv(filepath, dtype=str, encoding="latin-1", keep_default_na=False, na_values=[])
+                except Exception as e_latin:
+                    self.load_log(f"Failed to read CSV: {read_err}; {e_latin}", "error")
+                    return
 
-        # Insert the message with appropriate color
-        self.execution_terminal.insert('end', f"[{timestamp}] ", 'timestamp')
-        self.execution_terminal.insert('end', f"{message}\n", level)
+            # Write DataFrame to XLSX
+            try:
+                df.to_excel(out_xlsx, index=False, engine="openpyxl")
+            except Exception as e:
+                self.load_log(f"Failed to write XLSX: {e}", "error")
+                return
 
-        # Auto-scroll to bottom
-        self.execution_terminal.see('end')
+            # Load workbook and auto-adjust column widths
+            try:
+                wb = load_workbook(out_xlsx)
+                ws = wb.active
 
-        # Disable text widget to prevent user editing
-        self.execution_terminal.configure(state='disabled')
+                # Convert Dustable column (E) text to numbers
+                for row in range(2, ws.max_row + 1):  # Assuming header in row 1
+                    cell = ws[f'E{row}']
+                    if cell.value is not None and isinstance(cell.value, str) and cell.value.isdigit():
+                        cell.value = int(cell.value)
 
-        # Update UI
-        self.root.update_idletasks()
+                # Compute column widths: max length of each column's cells (account for multi-line)
+                MAX_WIDTH = 250  # character cap to avoid absurd widths
+                PAD = 1  # extra padding characters
 
-        # Also print to console for debugging
-        print(f"[{level.upper()}] {log_message}", end='')
+                for col_idx, col in enumerate(ws.iter_cols(values_only=True), start=1):
+                    max_len = 0
+                    for cell_val in col:
+                        # convert None to empty string; measure the longest line
+                        if cell_val is None:
+                            continue
+                        try:
+                            s = str(cell_val)
+                        except Exception:
+                            s = ""
+                        # For multi-line cells use longest line
+                        longest = max((len(line) for line in s.splitlines()), default=0)
+                        if longest > max_len:
+                            max_len = longest
+                    # ensure a minimum width for readability
+                    raw_width = max(3, min(MAX_WIDTH, int(max_len + PAD)))
+                    width = max(3, int(round(raw_width * 0.9)))
+                    col_letter = get_column_letter(col_idx)
+                    ws.column_dimensions[col_letter].width = width
+
+                # Save workbook with adjusted widths
+                wb.save(out_xlsx)
+
+                # If pywin32 available, apply true Excel AutoFit for better accuracy
+                if HAS_WIN32:
+                    try:
+                        excel = win32.gencache.EnsureDispatch('Excel.Application')
+                        wb_excel = excel.Workbooks.Open(out_xlsx)
+                        ws_excel = wb_excel.Worksheets(1)
+                        ws_excel.Cells.Select()
+                        ws_excel.Columns.AutoFit()
+                        wb_excel.Save()
+                        wb_excel.Close()
+                        excel.Quit()
+                    except Exception:
+                        pass  # Fallback to openpyxl widths
+            except Exception as e:
+                self.load_log(f"Auto-fit failed but XLSX was created: {e}", "warning")
+
+            # Open the generated XLSX using the OS default app (Excel on Windows)
+            try:
+                os.startfile(out_xlsx)
+                self.load_log(f"Opened {os.path.basename(out_xlsx)} in default application", "info")
+            except Exception:
+                # cross-platform fallback
+                try:
+                    import subprocess, sys
+                    if sys.platform.startswith("darwin"):
+                        subprocess.call(["open", out_xlsx])
+                    else:
+                        subprocess.call(["xdg-open", out_xlsx])
+                    self.load_log(f"Opened {os.path.basename(out_xlsx)} with default application", "info")
+                except Exception as e:
+                    self.load_log(f"Failed to open generated XLSX: {e}", "error")
+
+        except Exception as e:
+            self.load_log(f"Unexpected error in _open_file: {e}", "error")
+
+
 
     def load_log(self, message: str, level: str = "info"):
         """Add a message to the load terminal with specified log level
