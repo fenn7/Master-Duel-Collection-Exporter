@@ -7,6 +7,11 @@ import subprocess
 from typing import Optional
 import threading
 import re
+try:
+    import win32com.client as win32
+    HAS_WIN32 = True
+except ImportError:
+    HAS_WIN32 = False
 
 def parse_ansi(text: str) -> tuple[str, list[tuple[int, int, str]]]:
     """Parse ANSI escape sequences and return clean text with tag ranges."""
@@ -75,9 +80,10 @@ class MasterDuelExporterApp:
 
         # Process for scanning
         self.process = None
-        
-        # Configure terminal text tags for colors
-        self.terminal = None  # Will be initialized in create_new_collection
+
+        # Terminals
+        self.execution_terminal = None  # For Create New Collection
+        self.load_terminal = None  # For Load Collection
         
         # Set application icon if available
         try:
@@ -105,7 +111,9 @@ class MasterDuelExporterApp:
         # Main container
         self.main_frame = ttk.Frame(self.root)
         self.main_frame.pack(expand=True, fill='both', padx=20, pady=20)
-        
+
+
+
         # Show the main menu initially
         self.show_main_menu()
 
@@ -113,6 +121,8 @@ class MasterDuelExporterApp:
         """Clear all widgets from the main frame"""
         for widget in self.main_frame.winfo_children():
             widget.destroy()
+
+
 
     def show_main_menu(self):
         """Show the main menu with two main options"""
@@ -307,9 +317,9 @@ class MasterDuelExporterApp:
             padding=4  # Reduced from 5 to 4
         )
         terminal_frame.pack(fill='both', expand=True, padx=14, pady=(7, 14))  # Reduced padding by 30%
-        
+
         # Create text widget for terminal output
-        self.terminal = tk.Text(
+        self.execution_terminal = tk.Text(
             terminal_frame,
             bg='black',
             fg='white',  # White text
@@ -322,26 +332,31 @@ class MasterDuelExporterApp:
         )
 
         # Configure ANSI color tags
-        self.terminal.tag_configure('blue', foreground='#0080ff')
-        self.terminal.tag_configure('white', foreground='white')
-        self.terminal.tag_configure('green', foreground='#00ff00')
-        self.terminal.tag_configure('yellow', foreground='#ffff00')
-        self.terminal.tag_configure('red', foreground='#ff0000')
-        self.terminal.tag_configure('cyan', foreground='#00ffff')
-        self.terminal.tag_configure('bold_white', foreground='white', font=('Consolas', 10, 'bold'))
-        self.terminal.tag_configure('bold_cyan', foreground='#00ffff', font=('Consolas', 10, 'bold'))
-        self.terminal.tag_configure('bold_yellow', foreground='#ffff00', font=('Consolas', 10, 'bold'))
-        self.terminal.tag_configure('bold_blue', foreground='#0080ff', font=('Consolas', 10, 'bold'))
-        self.terminal.tag_configure('underline_white', foreground='white', underline=True)
+        self.execution_terminal.tag_configure('timestamp', foreground='#404040')
+        self.execution_terminal.tag_configure('info', foreground='white')
+        self.execution_terminal.tag_configure('warning', foreground='#ffff00')
+        self.execution_terminal.tag_configure('error', foreground='#ff0000')
+        self.execution_terminal.tag_configure('debug', foreground='#00ffff')
+        self.execution_terminal.tag_configure('blue', foreground='#0080ff')
+        self.execution_terminal.tag_configure('white', foreground='white')
+        self.execution_terminal.tag_configure('green', foreground='#00ff00')
+        self.execution_terminal.tag_configure('yellow', foreground='#ffff00')
+        self.execution_terminal.tag_configure('red', foreground='#ff0000')
+        self.execution_terminal.tag_configure('cyan', foreground='#00ffff')
+        self.execution_terminal.tag_configure('bold_white', foreground='white', font=('Consolas', 10, 'bold'))
+        self.execution_terminal.tag_configure('bold_cyan', foreground='#00ffff', font=('Consolas', 10, 'bold'))
+        self.execution_terminal.tag_configure('bold_yellow', foreground='#ffff00', font=('Consolas', 10, 'bold'))
+        self.execution_terminal.tag_configure('bold_blue', foreground='#0080ff', font=('Consolas', 10, 'bold'))
+        self.execution_terminal.tag_configure('underline_white', foreground='white', underline=True)
 
         # Add scrollbar
-        scrollbar = ttk.Scrollbar(terminal_frame, orient='vertical', command=self.terminal.yview)
-        self.terminal.configure(yscrollcommand=scrollbar.set)
+        scrollbar = ttk.Scrollbar(terminal_frame, orient='vertical', command=self.execution_terminal.yview)
+        self.execution_terminal.configure(yscrollcommand=scrollbar.set)
 
         # Pack the scrollbar and terminal
         scrollbar.pack(side='right', fill='y')
-        self.terminal.pack(side='left', fill='both', expand=True)
-        
+        self.execution_terminal.pack(side='left', fill='both', expand=True)
+
         # Add initial message
         self.log("Terminal initialised.", "info")
         self.update_status("Ready to start a new export.")
@@ -408,15 +423,56 @@ class MasterDuelExporterApp:
         button_frame = ttk.Frame(self.main_frame)
         button_frame.pack(fill='x', padx=35, pady=7)  # Matches create page
         
-        load_btn = ttk.Button(
+        self.load_btn = ttk.Button(
             button_frame,
             text="Load Collection",
             command=lambda: self.load_collection_file(self.file_entry.get()),
             style='Small.TButton',
-            padding=5
+            padding=5,
+            state='disabled'
         )
-        load_btn.pack(expand=True)
+        self.load_btn.pack(expand=True)
+
+        # Terminal display frame
+        terminal_frame = ttk.LabelFrame(
+            self.main_frame,
+            text="EXECUTION LOG",
+            padding=4
+        )
+        terminal_frame.pack(fill='both', expand=True, padx=14, pady=(7, 14))
+
+        # Create text widget for terminal output
+        self.load_terminal = tk.Text(
+            terminal_frame,
+            bg='black',
+            fg='white',  # White text
+            font=('Consolas', 10),
+            wrap=tk.WORD,
+            height=10,
+            state='disabled',
+            padx=5,
+            pady=5
+        )
+
+        # Configure tags
+        self.load_terminal.tag_configure('timestamp', foreground='#404040')  # Darker gray
+        self.load_terminal.tag_configure('info', foreground='white')  # White
+        self.load_terminal.tag_configure('warning', foreground='#ffff00')  # Yellow
+        self.load_terminal.tag_configure('error', foreground='#ff0000')  # Red
+
+        # Add scrollbar
+        scrollbar = ttk.Scrollbar(terminal_frame, orient='vertical', command=self.load_terminal.yview)
+        self.load_terminal.configure(yscrollcommand=scrollbar.set)
+
+        # Pack the scrollbar and terminal
+        scrollbar.pack(side='right', fill='y')
+        self.load_terminal.pack(side='left', fill='both', expand=True)
+
+        # Add initial message
+        self.load_log("Terminal initialized.", "info")
         
+        self.load_log("Ready to load saved CSV.", "info")
+
         # Status message at the bottom
         self.update_status("Select a collection file to load")
 
@@ -431,6 +487,7 @@ class MasterDuelExporterApp:
         if filename:
             self.file_entry.delete(0, tk.END)
             self.file_entry.insert(0, filename)
+            self.load_btn['state'] = 'normal'
             
     def browse_save_location(self):
         """Open directory dialog to choose where to save the CSV"""
@@ -453,25 +510,37 @@ class MasterDuelExporterApp:
     def load_collection_file(self, filepath):
         """Load an existing collection file"""
         if not filepath:
-            messagebox.showerror("Error", "Please select a file first")
+            self.load_log("Please select a file first", "error")
             return
-            
+
         if not os.path.exists(filepath):
-            messagebox.showerror("Error", f"File not found: {filepath}")
+            self.load_log(f"File not found: {os.path.basename(filepath)}", "error")
             return
-            
+
+        self.load_log(f"Opening file: {os.path.basename(filepath)}", "info")
+        self._open_file(filepath)
+
+    def _open_file(self, filepath):
+        """Open the file in Excel or default app"""
+        filepath = os.path.abspath(filepath)
         try:
-            # TODO: Implement loading and displaying the collection
-            self.update_status(f"Loaded collection: {os.path.basename(filepath)}")
-            messagebox.showinfo(
-                "Success", 
-                f"Successfully loaded collection from:\n{filepath}"
-            )
-            # Here you would add code to display the loaded collection
-            
+            if HAS_WIN32:
+                import time
+                excel = win32.gencache.EnsureDispatch('Excel.Application')
+                wb = excel.Workbooks.Open(filepath)
+                ws = wb.Worksheets(1)
+                wb.Activate()
+                ws.Activate()
+                time.sleep(1)  # Allow loading
+                ws.Cells.Select()
+                ws.Columns.AutoFit()
+                excel.Visible = True
+                self.load_log("Opened in Excel with AutoFit applied", "info")
+            else:
+                os.startfile(filepath)
+                self.load_log("Opened with default application", "info")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to load collection: {str(e)}")
-            self.update_status("Error loading collection")
+            self.load_log(f"Failed to open file: {str(e)}", "error")
 
     def log(self, message: str, level: str = "info"):
         """Add a message to the terminal with specified log level
@@ -480,7 +549,7 @@ class MasterDuelExporterApp:
             message: The message to display
             level: Log level ('info', 'warning', 'error')
         """
-        if self.terminal is None:
+        if self.execution_terminal is None:
             print(f"[{level.upper()}] {message}")
             return
 
@@ -500,21 +569,61 @@ class MasterDuelExporterApp:
         log_message = f"[{timestamp}] {message}\n"
 
         # Enable text widget for editing
-        self.terminal.configure(state='normal')
+        self.execution_terminal.configure(state='normal')
 
         # Insert the message with appropriate color
-        self.terminal.insert('end', f"[{timestamp}] ", 'timestamp')
-        self.terminal.insert('end', f"{message}\n", level)
+        self.execution_terminal.insert('end', f"[{timestamp}] ", 'timestamp')
+        self.execution_terminal.insert('end', f"{message}\n", level)
 
         # Auto-scroll to bottom
-        self.terminal.see('end')
+        self.execution_terminal.see('end')
 
         # Disable text widget to prevent user editing
-        self.terminal.configure(state='disabled')
+        self.execution_terminal.configure(state='disabled')
+
+        # Update UI
+        self.root.update_idletasks()
 
         # Also print to console for debugging
         print(f"[{level.upper()}] {log_message}", end='')
-    
+
+    def load_log(self, message: str, level: str = "info"):
+        """Add a message to the load terminal with specified log level
+
+        Args:
+            message: The message to display
+            level: Log level ('info', 'warning', 'error')
+        """
+        if self.load_terminal is None:
+            print(f"[{level.upper()}] {message}")
+            return
+
+        # Get current time
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+
+        # Format the message with timestamp and log level
+        log_message = f"[{timestamp}] {message}\n"
+
+        # Enable text widget for editing
+        self.load_terminal.configure(state='normal')
+
+        # Insert the message with appropriate color
+        self.load_terminal.insert('end', f"[{timestamp}] ", 'timestamp')
+        self.load_terminal.insert('end', f"{message}\n", level)
+
+        # Auto-scroll to bottom
+        self.load_terminal.see('end')
+
+        # Disable text widget to prevent user editing
+        self.load_terminal.configure(state='disabled')
+
+        # Update UI
+        self.root.update_idletasks()
+
+        # Also print to console for debugging
+        print(f"[{level.upper()}] {log_message}", end='')
+
     def update_status(self, message: str):
         """Update the status message and log it"""
         self.log(f"Status: {message}", "info")
@@ -594,36 +703,25 @@ class MasterDuelExporterApp:
         summary_mode = False
         for line in iter(self.process.stdout.readline, ''):
             clean_line, ranges = parse_ansi(line)
-            stripped = clean_line.strip()
-            if stripped == "=== FINAL CARD SUMMARY ===":
-                summary_mode = True
-            elif "Preparing CSV file data" in stripped:
-                summary_mode = False
-            elif stripped == "=== Process Complete ===":
-                summary_mode = False
-            if summary_mode:
-                full_line = clean_line
-                ts_end = 0
-            else:
-                timestamp = datetime.now().strftime("%H:%M:%S")
-                ts_prefix = f"[{timestamp}] "
-                full_line = ts_prefix + clean_line
-                ts_end = len(ts_prefix)
-            self.terminal.configure(state='normal')
-            start_idx = self.terminal.index('end-1c')
-            self.terminal.insert('end', full_line)
-            if not summary_mode:
-                # Apply timestamp tag
-                self.terminal.tag_add('timestamp', f"{start_idx}+0c", f"{start_idx}+{ts_end}c")
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            ts_prefix = f"[{timestamp}] "
+            full_line = ts_prefix + clean_line
+            self.execution_terminal.configure(state='normal')
+            start_idx = self.execution_terminal.index('end-1c')
+            self.execution_terminal.insert('end', full_line)
+            # Apply timestamp tag
+            ts_end = len(ts_prefix)
+            self.execution_terminal.tag_add('timestamp', f"{start_idx}+0c", f"{start_idx}+{ts_end}c")
             # Apply ANSI tags, adjusted for prefix
             for s, e, tag in ranges:
                 adj_s = s + ts_end
                 adj_e = e + ts_end
                 tag_start = f"{start_idx}+{adj_s}c"
                 tag_end = f"{start_idx}+{adj_e}c"
-                self.terminal.tag_add(tag, tag_start, tag_end)
-            self.terminal.see('end')
-            self.terminal.configure(state='disabled')
+                self.execution_terminal.tag_add(tag, tag_start, tag_end)
+            self.execution_terminal.see('end')
+            self.execution_terminal.configure(state='disabled')
+            self.root.update_idletasks()
         self.process.stdout.close()
         self.process.wait()
         # Reset UI
