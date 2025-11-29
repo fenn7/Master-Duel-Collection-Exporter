@@ -8,9 +8,19 @@ from typing import Optional
 import threading
 import re
 import time
+import tempfile
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
+from card_name_matcher import get_canonical_name_and_legacy_status
+# Import functions from main-new-better.py
+# Assuming they can be imported
+try:
+    from main_new_better import get_card_data
+except ImportError:
+    # Placeholder if not available
+    def get_card_data(name):
+        return {'Rarity': 'Basic', 'Archetype': '', 'Frame': '', 'Type': '', 'Stats': '', 'Effect': ''}
 try:
     import win32com.client as win32
     HAS_WIN32 = True
@@ -426,7 +436,7 @@ class MasterDuelExporterApp:
 
         instructions_text = (
             "1. Select an existing collection CSV file using the browse button. \n"
-            "2. Ensure that file is not already open! Click \"Load Collection\" to view it. \n"
+            "2. Ensure that file is not already open! Click \"View Collection\" to view it. \n"
             "3. To update the data entries yourself, click on \"Update Collection\".\n"
             "4. Then follow the instructions to add, remove or amend collection data.\n"
             "5. NOTE: You will need to close and re-open the file to view your updates."
@@ -445,7 +455,7 @@ class MasterDuelExporterApp:
         
         self.load_btn = ttk.Button(
             button_frame,
-            text="Load Collection",
+            text="View Collection",
             command=lambda: self.load_collection_file(self.file_entry.get()),
             style='Small.TButton',
             padding=5,
@@ -516,10 +526,12 @@ class MasterDuelExporterApp:
         if filename:
             self.file_entry.delete(0, tk.END)
             self.file_entry.insert(0, filename)
-            self.load_btn['state'] = 'normal'
+            self.current_csv = filename
             if filename.lower().endswith('.csv'):
+                self.load_btn['state'] = 'normal'
                 self.update_btn['state'] = 'normal'
             else:
+                self.load_btn['state'] = 'disabled'
                 self.update_btn['state'] = 'disabled'
             
     def browse_save_location(self):
@@ -551,6 +563,7 @@ class MasterDuelExporterApp:
             return
 
         self.load_log(f"Opening file: {os.path.basename(filepath)}", "info")
+        self.current_csv = filepath
         self._open_file(filepath)
         if filepath.lower().endswith('.csv'):
             self.update_btn['state'] = 'normal'
@@ -588,8 +601,8 @@ class MasterDuelExporterApp:
                         self.load_log(f"Failed to open existing spreadsheet: {e}", "error")
                         return
 
-            # Build output xlsx path
-            out_xlsx = f"{base}.xlsx"
+            # Build output xlsx path in temp directory
+            out_xlsx = os.path.join(tempfile.gettempdir(), f"{base}.xlsx")
 
             # Read CSV robustly (try utf-8 then latin-1)
             read_err = None
@@ -763,6 +776,113 @@ class MasterDuelExporterApp:
         """Validate that the input is a number or empty"""
         return value == '' or value.isdigit()
 
+    def add_card(self):
+        """Add card to the collection"""
+        try:
+            name = self.update_name.get().strip()
+            count = int(self.update_number.get() or 0)
+            rarity = self.update_rarity.get()
+            dustable = int(self.update_dustable.get() or 0)
+
+            if not name or count <= 0:
+                self.load_log("Error: Please enter a card name and positive count.", "error")
+                return
+
+            canonical, legacy = get_canonical_name_and_legacy_status(name)
+            if not canonical:
+                self.load_log("Error: Card not found.", "error")
+                return
+
+            # Load CSV
+            df = pd.read_csv(self.current_csv, dtype=str, keep_default_na=False, na_values=[])
+
+            # Check if exists
+            mask = df['Name'] == canonical
+            if mask.any():
+                # Update existing
+                idx = df[mask].index[0]
+                df.at[idx, 'Copies'] = str(int(df.at[idx, 'Copies']) + count)
+                finish_col = f"{rarity} Copies"
+                if finish_col in df.columns:
+                    df.at[idx, finish_col] = str(int(df.at[idx, finish_col] or 0) + count)
+                df.at[idx, 'Dustable'] = str(int(df.at[idx, 'Dustable'] or 0) + dustable)
+            else:
+                # Add new
+                card_info = get_card_data(canonical)
+                new_row = {
+                    'Name': canonical,
+                    'Copies': str(count),
+                    'Basic Copies': str(count) if rarity == 'Basic' else '0',
+                    'Glossy Copies': str(count) if rarity == 'Glossy' else '0',
+                    'Royal Copies': str(count) if rarity == 'Royal' else '0',
+                    'Dustable': str(dustable),
+                    'Rarity': card_info.get('Rarity', ''),
+                    'Archetype': card_info.get('Archetype', ''),
+                    'Frame': card_info.get('Frame', ''),
+                    'Type': card_info.get('Type', ''),
+                    'Stats': card_info.get('Stats', ''),
+                    'Effect': card_info.get('Effect', ''),
+                    'Legacy': 'Yes' if legacy else 'No'
+                }
+                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+
+            # Save CSV
+            df.to_csv(self.current_csv, index=False)
+
+            self.load_log(f"Added {count} copies of {canonical}.", "info")
+
+        except Exception as e:
+            self.load_log(f"Failed to add card: {str(e)}", "error")
+
+    def delete_card(self):
+        """Delete card from the collection"""
+        try:
+            name = self.update_name.get().strip()
+            count = int(self.update_number.get() or 0)
+            rarity = self.update_rarity.get()
+            dustable = int(self.update_dustable.get() or 0)
+
+            if not name or count <= 0:
+                self.load_log("Error: Please enter a card name and positive count.", "error")
+                return
+
+            canonical, _ = get_canonical_name_and_legacy_status(name)
+            if not canonical:
+                self.load_log("Error: Card not found.", "error")
+                return
+
+            # Load CSV
+            df = pd.read_csv(self.current_csv, dtype=str, keep_default_na=False, na_values=[])
+
+            # Check if exists
+            mask = df['Name'] == canonical
+            if not mask.any():
+                self.load_log("Error: Card not in collection.", "error")
+                return
+
+            idx = df[mask].index[0]
+            current_copies = int(df.at[idx, 'Copies'])
+            finish_col = f"{rarity} Copies"
+            current_finish = int(df.at[idx, finish_col] or 0)
+            current_dustable = int(df.at[idx, 'Dustable'] or 0)
+
+            if current_copies < count or current_finish < count or current_dustable < dustable:
+                self.load_log("Error: Not enough copies to remove.", "error")
+                return
+
+            # Update
+            df.at[idx, 'Copies'] = str(current_copies - count)
+            df.at[idx, finish_col] = str(current_finish - count)
+            df.at[idx, 'Dustable'] = str(current_dustable - dustable)
+
+            # Save CSV
+            df.to_csv(self.current_csv, index=False)
+
+            self.load_log(f"Removed {count} copies of {canonical}.", "info")
+
+        except Exception as e:
+            self.load_log(f"Failed to delete card: {str(e)}", "error")
+
     def show_update_screen(self):
         """Show the update collection screen"""
         if hasattr(self, 'update_window') and self.update_window and self.update_window.winfo_exists():
@@ -835,10 +955,10 @@ class MasterDuelExporterApp:
         buttons_frame = ttk.Frame(update_window)
         buttons_frame.grid(row=4, column=0, columnspan=2, pady=5)
 
-        add_btn = ttk.Button(buttons_frame, text="ADD", command=None)
+        add_btn = ttk.Button(buttons_frame, text="ADD", command=self.add_card)
         add_btn.pack(side='left', padx=10)
 
-        delete_btn = ttk.Button(buttons_frame, text="DELETE", command=None)
+        delete_btn = ttk.Button(buttons_frame, text="DELETE", command=self.delete_card)
         delete_btn.pack(side='right', padx=10)
 
         # Configure column weights
