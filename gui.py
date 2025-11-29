@@ -456,7 +456,7 @@ class MasterDuelExporterApp:
         self.update_btn = ttk.Button(
             button_frame,
             text="Update Collection",
-            command=None,
+            command=self.show_update_screen,
             style='Small.TButton',
             padding=5,
             state='disabled'
@@ -758,6 +758,91 @@ class MasterDuelExporterApp:
 
         # Also print to console for debugging
         print(f"[{level.upper()}] {log_message}", end='')
+
+    def validate_number(self, value):
+        """Validate that the input is a number or empty"""
+        return value == '' or value.isdigit()
+
+    def show_update_screen(self):
+        """Show the update collection screen"""
+        if hasattr(self, 'update_window') and self.update_window and self.update_window.winfo_exists():
+            return  # Window already open
+
+        self.update_btn['state'] = 'disabled'  # Grey out the button
+
+        update_window = tk.Toplevel(self.root)
+        self.update_window = update_window
+        update_window.title("Update Collection")
+        update_window.geometry("400x250")
+
+        # Set icon
+        try:
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'favicon.ico')
+            if os.path.exists(icon_path):
+                update_window.iconbitmap(icon_path)
+        except Exception:
+            pass
+
+        # Validation for numbers
+        vcmd = (self.root.register(self.validate_number), '%P')
+
+        # Variables
+        self.update_name = tk.StringVar()
+        self.update_number = tk.StringVar(value='1')
+        self.update_dustable = tk.StringVar(value='1')
+        self.update_rarity = tk.StringVar(value='Basic')
+
+        # Trace for name change to reset others
+        def on_name_change(*args):
+            self.update_number.set('1')
+            self.update_dustable.set('1')
+            self.update_rarity.set('Basic')
+
+        self.update_name.trace('w', on_name_change)
+
+        # Trace for number change to mirror dustable
+        def on_number_change(*args):
+            self.update_dustable.set(self.update_number.get())
+
+        self.update_number.trace('w', on_number_change)
+
+        # On close
+        def on_close():
+            self.update_window = None
+            self.update_btn['state'] = 'normal'  # Re-enable the button
+            update_window.destroy()
+
+        update_window.protocol("WM_DELETE_WINDOW", on_close)
+
+        # Layout
+        ttk.Label(update_window, text="Card Name:").grid(row=0, column=0, padx=10, pady=10, sticky='w')
+        name_entry = ttk.Entry(update_window, textvariable=self.update_name)
+        name_entry.grid(row=0, column=1, padx=10, pady=10, sticky='ew')
+
+        ttk.Label(update_window, text="Count:").grid(row=1, column=0, padx=10, pady=10, sticky='w')
+        number_entry = ttk.Entry(update_window, textvariable=self.update_number, validate='key', validatecommand=vcmd)
+        number_entry.grid(row=1, column=1, padx=10, pady=10, sticky='ew')
+
+        ttk.Label(update_window, text="Rarity:").grid(row=2, column=0, padx=10, pady=10, sticky='w')
+        rarity_combo = ttk.Combobox(update_window, textvariable=self.update_rarity, values=['Basic', 'Glossy', 'Royal'], state='readonly')
+        rarity_combo.grid(row=2, column=1, padx=10, pady=10, sticky='ew')
+
+        ttk.Label(update_window, text="Dustable:").grid(row=3, column=0, padx=10, pady=10, sticky='w')
+        dustable_entry = ttk.Entry(update_window, textvariable=self.update_dustable, validate='key', validatecommand=vcmd)
+        dustable_entry.grid(row=3, column=1, padx=10, pady=10, sticky='ew')
+
+        # Buttons frame for centering
+        buttons_frame = ttk.Frame(update_window)
+        buttons_frame.grid(row=4, column=0, columnspan=2, pady=5)
+
+        add_btn = ttk.Button(buttons_frame, text="ADD", command=None)
+        add_btn.pack(side='left', padx=10)
+
+        delete_btn = ttk.Button(buttons_frame, text="DELETE", command=None)
+        delete_btn.pack(side='right', padx=10)
+
+        # Configure column weights
+        update_window.columnconfigure(1, weight=1)
 
     def update_status(self, message: str):
         """Update the status message and log it"""
