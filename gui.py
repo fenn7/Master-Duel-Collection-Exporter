@@ -182,7 +182,7 @@ class MasterDuelExporterApp:
         
         # Header frame for back button and title
         header_frame = ttk.Frame(self.main_frame)
-        header_frame.pack(fill='x', pady=(0, 14))  # Reduced from 20 to 14 (30% less)
+        header_frame.pack(fill='x', pady=(0, 14))
 
         # Title centered in the frame
         title = ttk.Label(
@@ -190,9 +190,9 @@ class MasterDuelExporterApp:
             text="Create New Collection",
             style='Title.TLabel',
             anchor='center',
-            padding=(0, 0, 0, 0)  # No padding here, controlled by pack
+            padding=(0, 0, 0, 0)
         )
-        title.pack(expand=True, fill='x', pady=(0, 2))  # Reduced bottom padding to 2
+        title.pack(expand=True, fill='x', pady=(0, 2))
 
         # Back button placed on the left
         back_btn = ttk.Button(
@@ -207,9 +207,9 @@ class MasterDuelExporterApp:
             self.main_frame,
             text="Save your Master Duel collection to a new CSV file.",
             style='Subtitle.TLabel',
-            padding=(0, 0, 0, 0)  # No padding here
+            padding=(0, 0, 0, 0)
         )
-        info.pack(pady=(0, 7))  # Only bottom padding of 7
+        info.pack(pady=(0, 7))
         
         # Save location frame with label frame
         save_selector_frame = ttk.LabelFrame(
@@ -217,7 +217,7 @@ class MasterDuelExporterApp:
             text="Select save folder:",
             padding=4
         )
-        save_selector_frame.pack(fill='x', padx=35, pady=7)  # Matches other pages
+        save_selector_frame.pack(fill='x', padx=35, pady=7)
         
         # Save location entry and browse button
         entry_frame = ttk.Frame(save_selector_frame)
@@ -235,64 +235,33 @@ class MasterDuelExporterApp:
             width=3
         )
         browse_btn.pack(side='right')
-        
+
         # Instructions section
         instructions_frame = ttk.LabelFrame(
             self.main_frame,
             text="INSTRUCTIONS",
-            padding=7  # Reduced from 10 to 7
+            padding=4
         )
-        instructions_frame.pack(fill='x', padx=14, pady=(14, 7))  # Reduced padding by 30%
+        instructions_frame.pack(fill='x', padx=14, pady=(14, 7))
         
         instructions_text = (
             "1. Open Master Duel and click on the \"Deck\" button. \n"
             "2. Click on any of your Decks, then click \"Edit Deck\" \n"
             "3. Click \"Start Collection Scan\". \n"
             "4. DON'T close/minimise Master Duel or move your cursor during scan.\n"
-            "5. Click \"Stop Current Scan\" to stop scanning early.\n"
-            "6. Results will be saved to a CSV file in the selected folder."
+            "5. Results will be saved to a CSV file in the selected folder."
         )
         
         ttk.Label(
             instructions_frame,
             text=instructions_text,
             justify='left',
-            padding=(5, 5, 5, 5)
+            padding=(0, 0, 0, 0)
         ).pack(anchor='w')
         
-        # Options frame for checkboxes
-        options_frame = ttk.Frame(self.main_frame)
-        options_frame.pack(fill='x', padx=35, pady=(14, 7))  # Reduced padding by 30%
-
-        # Configure grid for centering
-        options_frame.columnconfigure(0, weight=1)
-        options_frame.columnconfigure(1, weight=0)
-        options_frame.columnconfigure(2, weight=0)
-        options_frame.columnconfigure(3, weight=1)
-
-        # Debug Mode checkbox
-        self.debug_mode = tk.BooleanVar(value=False)
-        debug_check = ttk.Checkbutton(
-            options_frame,
-            text="Debug Mode",
-            variable=self.debug_mode,
-            command=self.log_debug_mode
-        )
-        debug_check.grid(row=0, column=1, padx=20)
-
-        # Print Summary checkbox
-        self.print_summary = tk.BooleanVar(value=False)
-        summary_check = ttk.Checkbutton(
-            options_frame,
-            text="Print Summary",
-            variable=self.print_summary,
-            command=self.log_print_summary
-        )
-        summary_check.grid(row=0, column=2, padx=20)
-        
-        # Button frame for Start/Stop
+        # Button frame for Start/Stop and Checkboxes
         button_frame = ttk.Frame(self.main_frame)
-        button_frame.pack(fill='x', padx=35, pady=7)  # Reduced padding by 30%
+        button_frame.pack(fill='x', padx=35, pady=7)
         
         # Store buttons as instance variables for state management
         self.start_btn = ttk.Button(
@@ -302,31 +271,55 @@ class MasterDuelExporterApp:
             style='Small.TButton',
             padding=5
         )
-        self.start_btn.pack(side='left', expand=True, padx=5)
-        
+        self.start_btn.pack(side='left', expand=False, padx=(0, 5))
+
         self.stop_btn = ttk.Button(
             button_frame,
             text="Stop Current Scan",
             command=self.stop_collection_scan,
             style='Small.TButton',
             padding=5,
-            state='disabled'  # Disabled by default
+            state='disabled'
         )
-        self.stop_btn.pack(side='right', expand=True, padx=5)
+        self.stop_btn.pack(side='left', expand=False, padx=(0, 5))
+
+        # Options frame for checkboxes (positioned to the right of buttons)
+        options_frame = ttk.Frame(button_frame)
+        options_frame.pack(side='left', padx=(10, 0))
+
+        # Debug Mode checkbox
+        self.debug_mode = tk.BooleanVar(value=False)
+        debug_check = ttk.Checkbutton(
+            options_frame,
+            text="Debug Mode",
+            variable=self.debug_mode,
+            command=self.log_debug_mode
+        )
+        debug_check.grid(row=0, column=0, sticky='w', padx=0, pady=2)
+
+        # Print Summary checkbox
+        self.print_summary = tk.BooleanVar(value=False)
+        summary_check = ttk.Checkbutton(
+            options_frame,
+            text="Print Summary",
+            variable=self.print_summary,
+            command=self.log_print_summary
+        )
+        summary_check.grid(row=1, column=0, sticky='w', padx=0, pady=2)
         
         # Terminal display frame
         terminal_frame = ttk.LabelFrame(
             self.main_frame,
             text="EXECUTION LOG",
-            padding=4  # Reduced from 5 to 4
+            padding=4
         )
-        terminal_frame.pack(fill='both', expand=True, padx=14, pady=(7, 14))  # Reduced padding by 30%
+        terminal_frame.pack(fill='both', expand=True, padx=14, pady=(7, 14))
 
         # Create text widget for terminal output
         self.execution_terminal = tk.Text(
             terminal_frame,
             bg='black',
-            fg='white',  # White text
+            fg='white',
             font=('Consolas', 10),
             wrap=tk.WORD,
             height=10,
@@ -371,7 +364,7 @@ class MasterDuelExporterApp:
         
         # Header frame for back button and title
         header_frame = ttk.Frame(self.main_frame)
-        header_frame.pack(fill='x', pady=(0, 14))  # Matches create page
+        header_frame.pack(fill='x', pady=(0, 14))
 
         # Title centered in the frame
         title = ttk.Label(
@@ -380,7 +373,7 @@ class MasterDuelExporterApp:
             style='Title.TLabel',
             anchor='center'
         )
-        title.pack(expand=True, fill='x', pady=(0, 2))  # Matches create page
+        title.pack(expand=True, fill='x', pady=(0, 2))
 
         # Back button placed on the left
         back_btn = ttk.Button(
@@ -397,7 +390,7 @@ class MasterDuelExporterApp:
             text="Select an existing collection CSV file to view or edit:",
             style='Subtitle.TLabel'
         )
-        info.pack(pady=(0, 7))  # Reduced from 10 to 7 to match create page
+        info.pack(pady=(0, 7))
         
         # File selection frame with consistent padding
         file_selector_frame = ttk.LabelFrame(
@@ -405,7 +398,7 @@ class MasterDuelExporterApp:
             text="Select saved collection:",
             padding=4
         )
-        file_selector_frame.pack(fill='x', padx=35, pady=7)  # Matches create page
+        file_selector_frame.pack(fill='x', padx=35, pady=7)
         
         # File entry and browse button
         file_frame = ttk.Frame(file_selector_frame)
@@ -422,10 +415,33 @@ class MasterDuelExporterApp:
             width=3
         )
         browse_btn.pack(side='right')
-        
+
+        # Instructions section - matches Create page padding
+        instructions_frame = ttk.LabelFrame(
+            self.main_frame,
+            text="INSTRUCTIONS",
+            padding=4
+        )
+        instructions_frame.pack(fill='x', padx=14, pady=(14, 7))
+
+        instructions_text = (
+            "1. Select an existing collection CSV file using the browse button. \n"
+            "2. Ensure that file is not already open! Click \"Load Collection\" to view it. \n"
+            "3. To update the data entries yourself, click on \"Update Collection\".\n"
+            "4. Then follow the instructions to add, remove or amend collection data.\n"
+            "5. NOTE: You will need to close and re-open the file to view your updates."
+        )
+
+        ttk.Label(
+            instructions_frame,
+            text=instructions_text,
+            justify='left',
+            padding=(0, 0, 0, 0)
+        ).pack(anchor='w')
+
         # Load button with consistent styling
         button_frame = ttk.Frame(self.main_frame)
-        button_frame.pack(fill='x', padx=35, pady=7)  # Matches create page
+        button_frame.pack(fill='x', padx=35, pady=7)
         
         self.load_btn = ttk.Button(
             button_frame,
@@ -435,7 +451,17 @@ class MasterDuelExporterApp:
             padding=5,
             state='disabled'
         )
-        self.load_btn.pack(expand=True)
+        self.load_btn.pack(side='left', expand=True, padx=(0, 5))
+
+        self.update_btn = ttk.Button(
+            button_frame,
+            text="Update Collection",
+            command=None,
+            style='Small.TButton',
+            padding=5,
+            state='disabled'
+        )
+        self.update_btn.pack(side='right', expand=True, padx=(5, 0))
 
         # Terminal display frame
         terminal_frame = ttk.LabelFrame(
@@ -449,7 +475,7 @@ class MasterDuelExporterApp:
         self.load_terminal = tk.Text(
             terminal_frame,
             bg='black',
-            fg='white',  # White text
+            fg='white',
             font=('Consolas', 10),
             wrap=tk.WORD,
             height=10,
@@ -461,8 +487,8 @@ class MasterDuelExporterApp:
         # Configure tags
         self.load_terminal.tag_configure('timestamp', foreground='#999999')  
         self.load_terminal.tag_configure('info', foreground='white')
-        self.load_terminal.tag_configure('warning', foreground='#ffff00')  # Yellow
-        self.load_terminal.tag_configure('error', foreground='#ff0000')  # Red
+        self.load_terminal.tag_configure('warning', foreground='#ffff00')
+        self.load_terminal.tag_configure('error', foreground='#ff0000')
 
         # Add scrollbar
         scrollbar = ttk.Scrollbar(terminal_frame, orient='vertical', command=self.load_terminal.yview)
@@ -474,7 +500,6 @@ class MasterDuelExporterApp:
 
         # Add initial message
         self.load_log("Terminal initialized.", "info")
-        
         self.load_log("Ready to load saved CSV.", "info")
 
         # Status message at the bottom
@@ -492,6 +517,10 @@ class MasterDuelExporterApp:
             self.file_entry.delete(0, tk.END)
             self.file_entry.insert(0, filename)
             self.load_btn['state'] = 'normal'
+            if filename.lower().endswith('.csv'):
+                self.update_btn['state'] = 'normal'
+            else:
+                self.update_btn['state'] = 'disabled'
             
     def browse_save_location(self):
         """Open directory dialog to choose where to save the CSV"""
@@ -523,6 +552,10 @@ class MasterDuelExporterApp:
 
         self.load_log(f"Opening file: {os.path.basename(filepath)}", "info")
         self._open_file(filepath)
+        if filepath.lower().endswith('.csv'):
+            self.update_btn['state'] = 'normal'
+        if filepath.lower().endswith('.csv'):
+            self.update_btn['state'] = 'normal'
 
     def _open_file(self, filepath):
         """
@@ -682,6 +715,43 @@ class MasterDuelExporterApp:
 
         # Disable text widget to prevent user editing
         self.load_terminal.configure(state='disabled')
+
+        # Update UI
+        self.root.update_idletasks()
+
+        # Also print to console for debugging
+        print(f"[{level.upper()}] {log_message}", end='')
+
+    def log(self, message: str, level: str = "info"):
+        """Add a message to the execution terminal with specified log level
+
+        Args:
+            message: The message to display
+            level: Log level ('info', 'warning', 'error')
+        """
+        if self.execution_terminal is None:
+            print(f"[{level.upper()}] {message}")
+            return
+
+        # Get current time
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+
+        # Format the message with timestamp and log level
+        log_message = f"[{timestamp}] {message}\n"
+
+        # Enable text widget for editing
+        self.execution_terminal.configure(state='normal')
+
+        # Insert the message with appropriate color
+        self.execution_terminal.insert('end', f"[{timestamp}] ", 'timestamp')
+        self.execution_terminal.insert('end', f"{message}\n", level)
+
+        # Auto-scroll to bottom
+        self.execution_terminal.see('end')
+
+        # Disable text widget to prevent user editing
+        self.execution_terminal.configure(state='disabled')
 
         # Update UI
         self.root.update_idletasks()
