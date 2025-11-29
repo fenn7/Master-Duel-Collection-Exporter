@@ -8,7 +8,7 @@ from typing import Optional
 import threading
 import re
 import time
-import tempfile
+
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -601,8 +601,18 @@ class MasterDuelExporterApp:
                         self.load_log(f"Failed to open existing spreadsheet: {e}", "error")
                         return
 
-            # Build output xlsx path in temp directory
-            out_xlsx = os.path.join(tempfile.gettempdir(), f"{base}.xlsx")
+            # Build output xlsx path in formatted subfolder
+            formatted_dir = os.path.join(os.path.dirname(filepath), 'formatted')
+            os.makedirs(formatted_dir, exist_ok=True)
+            filename = os.path.basename(filepath)
+            name = os.path.splitext(filename)[0]
+            out_xlsx = os.path.join(formatted_dir, f"FORMATTED_{name}.xlsx")
+
+            # Check if XLSX already exists
+            if os.path.exists(out_xlsx):
+                os.startfile(out_xlsx)
+                self.load_log(f"Opened existing formatted XLSX for {os.path.basename(filepath)}", "info")
+                return
 
             # Read CSV robustly (try utf-8 then latin-1)
             read_err = None
