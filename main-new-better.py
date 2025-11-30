@@ -822,7 +822,6 @@ def main():
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     parser.add_argument('--no-summary', action='store_true', help='Disable summary printing')
     parser.add_argument('--output-dir', default='collection_csv', help='Output directory for CSV files')
-    parser.add_argument('--screen-res', default='125%', help='Screen resolution percentage (e.g., 125%)')
     parser.add_argument('--game-res', default='1600x900', help='In-game resolution (e.g., 1600x900)')
     args = parser.parse_args()
 
@@ -832,8 +831,7 @@ def main():
     OUTPUT_DIR = args.output_dir
 
     # Compute scaling factors
-    baseline_screen_pct = 125.0
-    screen_scale = float(args.screen_res.rstrip('%')) / baseline_screen_pct
+    screen_scale = 1.0  # Screen resolution does not affect display sizes
     # scale_x and scale_y will be set based on actual window size
     # Debug scales printed after detection
 
