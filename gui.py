@@ -13,14 +13,39 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from card_name_matcher import get_canonical_name_and_legacy_status
-# Import functions from main-new-better.py
-# Assuming they can be imported
-try:
-    from main_new_better import get_card_data
-except ImportError:
-    # Placeholder if not available
-    def get_card_data(name):
-        return {'Rarity': 'Basic', 'Archetype': '', 'Frame': '', 'Type': '', 'Stats': '', 'Effect': ''}
+import requests
+from urllib.parse import quote
+
+def get_card_info(canonical_name: str) -> dict:
+    """Fetch card info from YGOPRODECK API"""
+    if not canonical_name:
+        return {}
+    url = f"https://db.ygoprodeck.com/api/v7/cardinfo.php?name={quote(canonical_name)}&misc=yes"
+    try:
+        r = requests.get(url, timeout=5.0)
+        r.raise_for_status()
+        data = r.json()
+        if "error" in data:
+            return {"error": data["error"]}
+        if "data" in data and data["data"]:
+            return data["data"][0]
+    except Exception:
+        pass
+    return {}
+
+def get_card_rarity_from_info(card_info: dict) -> str:
+    """Extract rarity string from card info"""
+    misc_info = card_info.get("misc_info", [])
+    for misc in misc_info:
+        if "md_rarity" in misc:
+            rarity_map = {
+                "Common": "N ",
+                "Rare": "R ",
+                "Super Rare": "SR",
+                "Ultra Rare": "UR"
+            }
+            return rarity_map.get(misc["md_rarity"], "N ")
+    return "N "
 try:
     import win32com.client as win32
     HAS_WIN32 = True
@@ -782,123 +807,26 @@ class MasterDuelExporterApp:
         """Validate that the input is a number or empty"""
         return value == '' or value.isdigit()
 
-    def add_card(self):
-        """Add card to the collection"""
+    def parse_copies(self, copies_str):
+        """Parse 'N [Basic A, Glossy B, Royal C]' to dict"""
+        if not copies_str or '[' not in copies_str:
+            return {'total': 0, 'Basic': 0, 'Glossy': 0, 'Royal': 0}
         try:
-            name = self.update_name.get().strip()
-            count = int(self.update_number.get() or 0)
-            rarity = self.update_rarity.get()
-            dustable = int(self.update_dustable.get() or 0)
+            total_part, detail_part = copies_str.split(' [', 1)
+            total = int(total_part.strip())
+            detail = detail_part.rstrip(']')
+            parts = [p.strip() for p in detail.split(',')]
+            counts = {}
+            for part in parts:
+                finish, num = part.split()
+                counts[finish] = int(num)
+            return {'total': total, 'Basic': counts.get('Basic', 0), 'Glossy': counts.get('Glossy', 0), 'Royal': counts.get('Royal', 0)}
+        except:
+            return {'total': 0, 'Basic': 0, 'Glossy': 0, 'Royal': 0}
 
-            if not name or count <= 0:
-                self.load_log("Error: Please enter a card name and positive count.", "error")
-                return
-
-            canonical, legacy = get_canonical_name_and_legacy_status(name)
-            if not canonical:
-                self.load_log("Error: Card not found.", "error")
-                return
-
-            # Load CSV
-            df = pd.read_csv(self.current_csv, dtype=str, keep_default_na=False, na_values=[])
-
-            # Check if exists
-            mask = df['Name'] == canonical
-            if mask.any():
-                # Update existing
-                idx = df[mask].index[0]
-                df.at[idx, 'Copies'] = str(int(df.at[idx, 'Copies']) + count)
-                finish_col = f"{rarity} Copies"
-                if finish_col in df.columns:
-                    df.at[idx, finish_col] = str(int(df.at[idx, finish_col] or 0) + count)
-                df.at[idx, 'Dustable'] = str(int(df.at[idx, 'Dustable'] or 0) + dustable)
-            else:
-                # Add new
-                card_info = get_card_data(canonical)
-                new_row = {
-                    'Name': canonical,
-                    'Copies': str(count),
-                    'Basic Copies': str(count) if rarity == 'Basic' else '0',
-                    'Glossy Copies': str(count) if rarity == 'Glossy' else '0',
-                    'Royal Copies': str(count) if rarity == 'Royal' else '0',
-                    'Dustable': str(dustable),
-                    'Rarity': card_info.get('Rarity', ''),
-                    'Archetype': card_info.get('Archetype', ''),
-                    'Frame': card_info.get('Frame', ''),
-                    'Type': card_info.get('Type', ''),
-                    'Stats': card_info.get('Stats', ''),
-                    'Effect': card_info.get('Effect', ''),
-                    'Legacy': 'Yes' if legacy else 'No'
-                }
-                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-
-            # Save CSV
-            df.to_csv(self.current_csv, index=False)
-
-            self.load_log(f"Added {count} copies of {canonical}.", "info")
-
-        except Exception as e:
-            self.load_log(f"Failed to add card: {str(e)}", "error")
-
-    def delete_card(self):
-        """Delete card from the collection"""
-        try:
-            name = self.update_name.get().strip()
-            count = int(self.update_number.get() or 0)
-            rarity = self.update_rarity.get()
-            dustable = int(self.update_dustable.get() or 0)
-
-            if not name or count <= 0:
-                self.load_log("Error: Please enter a card name and positive count.", "error")
-                return
-
-            canonical, _ = get_canonical_name_and_legacy_status(name)
-            if not canonical:
-                self.load_log("Error: Card not found.", "error")
-                return
-
-            # Load CSV
-            df = pd.read_csv(self.current_csv, dtype=str, keep_default_na=False, na_values=[])
-
-            # Check if exists
-            mask = df['Name'] == canonical
-            if not mask.any():
-                self.load_log("Error: Card not in collection.", "error")
-                return
-
-            idx = df[mask].index[0]
-            current_copies = int(df.at[idx, 'Copies'])
-            finish_col = f"{rarity} Copies"
-            current_finish = int(df.at[idx, finish_col] or 0)
-            current_dustable = int(df.at[idx, 'Dustable'] or 0)
-
-            if current_copies < count or current_finish < count:
-                self.load_log("Error: Not enough copies to remove.", "error")
-                return
-
-            # Calculate new values
-            new_copies = current_copies - count
-            new_finish = current_finish - count
-            new_dustable = max(0, current_dustable - dustable)
-
-            if new_copies == 0:
-                # Remove the entry
-                df = df.drop(idx)
-                self.load_log(f"Removed all copies of {canonical}, entry deleted.", "info")
-            else:
-                # Update the entry
-                df.at[idx, 'Copies'] = str(new_copies)
-                df.at[idx, finish_col] = str(new_finish)
-                df.at[idx, 'Dustable'] = str(new_dustable)
-                self.load_log(f"Removed {count} copies of {canonical}.", "info")
-
-            # Save CSV
-            df.to_csv(self.current_csv, index=False)
-
-            self.load_log(f"Removed {count} copies of {canonical}.", "info")
-
-        except Exception as e:
-            self.load_log(f"Failed to delete card: {str(e)}", "error")
+    def format_copies(self, total, basic, glossy, royal):
+        """Format to 'N [Basic A, Glossy B, Royal C]'"""
+        return f"{total} [Basic {basic}, Glossy {glossy}, Royal {royal}]"
 
     def show_update_screen(self):
         """Show the update collection screen"""
@@ -927,19 +855,30 @@ class MasterDuelExporterApp:
         self.update_name = tk.StringVar()
         self.update_number = tk.StringVar(value='1')
         self.update_dustable = tk.StringVar(value='1')
-        self.update_rarity = tk.StringVar(value='Basic')
+        self.update_finish = tk.StringVar(value='Basic')
 
         # Trace for name change to reset others
         def on_name_change(*args):
             self.update_number.set('1')
             self.update_dustable.set('1')
-            self.update_rarity.set('Basic')
+            self.update_finish.set('Basic')
 
         self.update_name.trace('w', on_name_change)
 
-        # Trace for number change to mirror dustable
+        # Trace for number change to mirror dustable and enable/disable
         def on_number_change(*args):
-            self.update_dustable.set(self.update_number.get())
+            count_val = self.update_number.get()
+            if count_val:
+                dustable_entry['state'] = 'normal'
+                max_dust = int(count_val)
+                current_dust = int(self.update_dustable.get() or 0)
+                if current_dust > max_dust:
+                    self.update_dustable.set(str(max_dust))
+                else:
+                    self.update_dustable.set(count_val)  # Mirror
+            else:
+                dustable_entry['state'] = 'disabled'
+                self.update_dustable.set('')
 
         self.update_number.trace('w', on_number_change)
 
@@ -960,9 +899,9 @@ class MasterDuelExporterApp:
         number_entry = ttk.Entry(update_window, textvariable=self.update_number, validate='key', validatecommand=vcmd)
         number_entry.grid(row=1, column=1, padx=10, pady=10, sticky='ew')
 
-        ttk.Label(update_window, text="Rarity:").grid(row=2, column=0, padx=10, pady=10, sticky='w')
-        rarity_combo = ttk.Combobox(update_window, textvariable=self.update_rarity, values=['Basic', 'Glossy', 'Royal'], state='readonly')
-        rarity_combo.grid(row=2, column=1, padx=10, pady=10, sticky='ew')
+        ttk.Label(update_window, text="Finish:").grid(row=2, column=0, padx=10, pady=10, sticky='w')
+        finish_combo = ttk.Combobox(update_window, textvariable=self.update_finish, values=['Basic', 'Glossy', 'Royal'], state='readonly')
+        finish_combo.grid(row=2, column=1, padx=10, pady=10, sticky='ew')
 
         ttk.Label(update_window, text="Dustable:").grid(row=3, column=0, padx=10, pady=10, sticky='w')
         dustable_entry = ttk.Entry(update_window, textvariable=self.update_dustable, validate='key', validatecommand=vcmd)
@@ -980,6 +919,142 @@ class MasterDuelExporterApp:
 
         # Configure column weights
         update_window.columnconfigure(1, weight=1)
+
+    def add_card(self):
+        """Add card to the collection"""
+        try:
+            name = self.update_name.get().strip()
+            count = int(self.update_number.get() or 0)
+            finish = self.update_finish.get()
+            dustable = int(self.update_dustable.get() or 0)
+
+            if not name or count <= 0:
+                self.load_log("Error: Please enter a card name and positive count.", "error")
+                return
+
+            canonical, legacy = get_canonical_name_and_legacy_status(name)
+            if not canonical:
+                self.load_log("Error: Card not found.", "error")
+                return
+
+            # Load CSV
+            df = pd.read_csv(self.current_csv, dtype=str, keep_default_na=False, na_values=[])
+
+            # Check if exists
+            mask = df['Name'] == canonical
+            if mask.any():
+                # Update existing
+                idx = df[mask].index[0]
+                copies_dict = self.parse_copies(df.at[idx, 'Copies'])
+                copies_dict['total'] += count
+                copies_dict[finish] += count
+                df.at[idx, 'Copies'] = self.format_copies(copies_dict['total'], copies_dict['Basic'], copies_dict['Glossy'], copies_dict['Royal'])
+                df.at[idx, 'Dustable'] = str(int(df.at[idx, 'Dustable'] or 0) + dustable)
+            else:
+                # Add new - get API data
+                card_info = get_card_info(canonical)
+                if "error" in card_info:
+                    self.load_log(f"API Error for {canonical}: {card_info['error']}", "error")
+                    return
+                if not card_info:
+                    self.load_log(f"Error: Failed to get card data for {canonical}.", "error")
+                    return
+                # Compute fields like in main-new-better
+                card_rarity = get_card_rarity_from_info(card_info)
+                frame_type = card_info.get("frameType", "")
+                card_type = "Trap" if frame_type == "trap" else "Spell" if frame_type == "spell" else "Monster"
+                card_stats = ""
+                if card_info.get("type") not in ["Trap Card", "Spell Card"]:
+                    level = card_info.get("level", "")
+                    attribute = card_info.get("attribute", "")
+                    race = card_info.get("race", "")
+                    atk = card_info.get("atk", "")
+                    def_val = card_info.get("def")
+                    def_str = "-" if def_val is None else str(def_val)
+                    if frame_type == "xyz":
+                        card_stats = f" Rank {level}, "
+                    elif frame_type == "link":
+                        linkval = card_info.get("linkval", "")
+                        card_stats = f" Link {linkval}, "
+                    else:
+                        card_stats = f" Level {level}, "
+                    card_stats += f"{attribute}, {race}, {atk}/{def_str}"
+                new_row = {
+                    'Rarity': card_rarity,
+                    'Name': canonical,
+                    'Legacy': 'Yes' if legacy else 'No',
+                    'Copies': self.format_copies(count, count if finish == 'Basic' else 0, count if finish == 'Glossy' else 0, count if finish == 'Royal' else 0),
+                    'Dustable': str(dustable),
+                    'Archetype': card_info.get("archetype") or '',
+                    'Card Type': card_type,
+                    'Subtype': card_info.get("humanReadableCardType", ""),
+                    'Card Stats': card_stats,
+                    'Effect': card_info.get("desc", "").replace("\n", " ").replace("\r", " "),
+                }
+                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+
+            # Save CSV
+            df.to_csv(self.current_csv, index=False)
+
+            self.load_log(f"Added {count} {finish} copies of {canonical}.", "info")
+
+        except Exception as e:
+            self.load_log(f"Failed to add card: {str(e)}", "error")
+
+    def delete_card(self):
+        """Delete card from the collection"""
+        try:
+            name = self.update_name.get().strip()
+            count = int(self.update_number.get() or 0)
+            finish = self.update_finish.get()
+            dustable = int(self.update_dustable.get() or 0)
+
+            if not name or count <= 0:
+                self.load_log("Error: Please enter a card name and positive count.", "error")
+                return
+
+            canonical, _ = get_canonical_name_and_legacy_status(name)
+            if not canonical:
+                self.load_log("Error: Card not found.", "error")
+                return
+
+            # Load CSV
+            df = pd.read_csv(self.current_csv, dtype=str, keep_default_na=False, na_values=[])
+
+            # Check if exists
+            mask = df['Name'] == canonical
+            if not mask.any():
+                self.load_log("Error: Card not in collection.", "error")
+                return
+
+            idx = df[mask].index[0]
+            copies_dict = self.parse_copies(df.at[idx, 'Copies'])
+            current_finish = copies_dict[finish]
+
+            if copies_dict['total'] < count or current_finish < count:
+                self.load_log("Error: Not enough copies to remove.", "error")
+                return
+
+            # Calculate new values
+            copies_dict['total'] -= count
+            copies_dict[finish] -= count
+            new_dustable = max(0, int(df.at[idx, 'Dustable'] or 0) - dustable)
+
+            if copies_dict['total'] == 0:
+                # Remove the entry
+                df = df.drop(idx)
+                self.load_log(f"Removed all copies of {canonical}, entry deleted.", "info")
+            else:
+                # Update the entry
+                df.at[idx, 'Copies'] = self.format_copies(copies_dict['total'], copies_dict['Basic'], copies_dict['Glossy'], copies_dict['Royal'])
+                df.at[idx, 'Dustable'] = str(new_dustable)
+                self.load_log(f"Removed {count} {finish} copies of {canonical}.", "info")
+
+            # Save CSV
+            df.to_csv(self.current_csv, index=False)
+
+        except Exception as e:
+            self.load_log(f"Failed to delete card: {str(e)}", "error")
 
     def update_status(self, message: str):
         """Update the status message and log it"""
