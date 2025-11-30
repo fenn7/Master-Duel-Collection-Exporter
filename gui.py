@@ -117,6 +117,10 @@ class MasterDuelExporterApp:
         self.debug_mode = None
         self.print_summary = None
 
+        # Initialize resolution variables
+        self.screen_resolution = tk.StringVar(value='125%')
+        self.game_resolution = tk.StringVar(value='1600x900')
+
         # Process for scanning
         self.process = None
 
@@ -278,12 +282,12 @@ class MasterDuelExporterApp:
             text="INSTRUCTIONS",
             padding=4
         )
-        instructions_frame.pack(fill='x', padx=14, pady=(14, 7))
+        instructions_frame.pack(fill='x', padx=14, pady=(14, 4))
         
         instructions_text = (
             "1. Open Master Duel and click on the \"Deck\" button. \n"
-            "2. Click on any of your Decks, then click \"Edit Deck\" \n"
-            "3. Click \"Start Collection Scan\". \n"
+            "2. Click on any of your Decks, then click \"Edit Deck\". \n"
+            "3. Set the resolutions to match your setup, then click \"Start Collection Scan\". \n"
             "4. DON'T close/minimise Master Duel or move your cursor during scan.\n"
             "5. Results will be saved to a CSV file in the selected folder."
         )
@@ -294,10 +298,24 @@ class MasterDuelExporterApp:
             justify='left',
             padding=(0, 0, 0, 0)
         ).pack(anchor='w')
-        
+
+        # Resolution selection frame
+        resolution_frame = ttk.Frame(self.main_frame)
+        resolution_frame.pack(anchor='center', padx=14, pady=(7, 4))
+
+        ttk.Label(resolution_frame, text="Screen Resolution:").grid(row=0, column=0, sticky='w', padx=(0,5), pady=2)
+        screen_combo = ttk.Combobox(resolution_frame, textvariable=self.screen_resolution,
+                                    values=['100%', '125%', '150%', '175%'], state='readonly', width=10)
+        screen_combo.grid(row=0, column=1, sticky='w', padx=(0,20), pady=0)
+
+        ttk.Label(resolution_frame, text="Game Resolution:").grid(row=0, column=2, sticky='w', padx=(0,5), pady=2)
+        game_combo = ttk.Combobox(resolution_frame, textvariable=self.game_resolution,
+                                  values=['1280x720', '1366x768', '1440x810', '1600x900', '1920x1080'], state='readonly', width=12)
+        game_combo.grid(row=0, column=3, sticky='w', padx=0, pady=0)
+
         # Button frame for Start/Stop and Checkboxes
         button_frame = ttk.Frame(self.main_frame)
-        button_frame.pack(fill='x', padx=35, pady=7)
+        button_frame.pack(anchor='center', padx=35, pady=4)
         
         # Store buttons as instance variables for state management
         self.start_btn = ttk.Button(
@@ -349,7 +367,7 @@ class MasterDuelExporterApp:
             text="EXECUTION LOG",
             padding=4
         )
-        terminal_frame.pack(fill='both', expand=True, padx=14, pady=(7, 14))
+        terminal_frame.pack(fill='both', expand=True, padx=14, pady=(4, 14))
 
         # Create text widget for terminal output
         self.execution_terminal = tk.Text(
@@ -1168,6 +1186,8 @@ class MasterDuelExporterApp:
             if not self.print_summary.get():
                 cmd.append('--no-summary')
             cmd.extend(['--output-dir', save_path])
+            cmd.extend(['--screen-res', self.screen_resolution.get()])
+            cmd.extend(['--game-res', self.game_resolution.get()])
 
             # Start subprocess
             self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=os.getcwd())

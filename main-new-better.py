@@ -530,6 +530,7 @@ def process_full_collection_phases(win) -> List:
 def prepare_csv_data(cards_in_order) -> List:
     """Prepare CSV data from cards_in_order list"""
     print("Finished processing cards. Preparing CSV file data...")
+    print("Do not close the application.")
     csv_data = []
     try:
         from card_name_matcher import get_canonical_name_and_legacy_status
@@ -634,6 +635,7 @@ def write_csv(csv_data, message=None):
 def print_card_summary(cards_in_order: List):
     """Print final card summary with color-coded output"""
     print("Finished processing cards. Preparing final summary...")
+    print("Do not close the application.")
     _ansi_re = re.compile(r"\x1b\[[0-9;]*m")
     def strip_ansi(s: str) -> str:
         return _ansi_re.sub("", s) if isinstance(s, str) else ""
