@@ -608,11 +608,7 @@ class MasterDuelExporterApp:
             name = os.path.splitext(filename)[0]
             out_xlsx = os.path.join(formatted_dir, f"FORMATTED_{name}.xlsx")
 
-            # Check if XLSX already exists
-            if os.path.exists(out_xlsx):
-                os.startfile(out_xlsx)
-                self.load_log(f"Opened existing formatted XLSX for {os.path.basename(filepath)}", "info")
-                return
+
 
             # Read CSV robustly (try utf-8 then latin-1)
             read_err = None
@@ -876,14 +872,25 @@ class MasterDuelExporterApp:
             current_finish = int(df.at[idx, finish_col] or 0)
             current_dustable = int(df.at[idx, 'Dustable'] or 0)
 
-            if current_copies < count or current_finish < count or current_dustable < dustable:
+            if current_copies < count or current_finish < count:
                 self.load_log("Error: Not enough copies to remove.", "error")
                 return
 
-            # Update
-            df.at[idx, 'Copies'] = str(current_copies - count)
-            df.at[idx, finish_col] = str(current_finish - count)
-            df.at[idx, 'Dustable'] = str(current_dustable - dustable)
+            # Calculate new values
+            new_copies = current_copies - count
+            new_finish = current_finish - count
+            new_dustable = max(0, current_dustable - dustable)
+
+            if new_copies == 0:
+                # Remove the entry
+                df = df.drop(idx)
+                self.load_log(f"Removed all copies of {canonical}, entry deleted.", "info")
+            else:
+                # Update the entry
+                df.at[idx, 'Copies'] = str(new_copies)
+                df.at[idx, finish_col] = str(new_finish)
+                df.at[idx, 'Dustable'] = str(new_dustable)
+                self.load_log(f"Removed {count} copies of {canonical}.", "info")
 
             # Save CSV
             df.to_csv(self.current_csv, index=False)
