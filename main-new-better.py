@@ -11,6 +11,7 @@ import sys
 import re
 import datetime
 from pathlib import Path
+from tkinter.font import BOLD
 from typing import List, Tuple, Optional, Dict
 from urllib.parse import quote
 import cv2
@@ -20,22 +21,39 @@ import mss
 import pyautogui
 import pygetwindow as gw
 import requests
+import argparse
 
 # Configuration
 SCROLL_DELAY = 0
-AFTER_SCROLL_DELAY = 0.1
+AFTER_SCROLL_DELAY = 0.2
 CLICK_DESC_DELAY = 0
 WINDOW_TITLE_KEYWORD = "masterduel"
-OUTPUT_CSV = "collection_output"
+OUTPUT_CSV = "collection"
 DEBUG = False
 SUMMARY = True
 CSV = True
+OUTPUT_DIR = "collection_csv"
+# ANSI color codes
+LIGHT_BLUE = "\033[94m"
+LIGHT_RED = "\033[91m"
+UNDERLINE = "\033[4m"
+RESET = "\033[0m"
+BASIC_COLOR = "\033[97m"
+GLOSSY_COLOR = "\033[92m"
+ROYAL_COLOR = "\033[93m"
+UNDERLINE_WHITE = "\033[4;97m"
+RARITY_WHITE = "\033[1;97m"
+RARITY_LIGHT_BLUE = "\033[1;96m"
+RARITY_GOLD = "\033[1;93m"
+RARITY_DARK_BLUE = "\033[1;94m"
+RARITY_BOLD = "\033[1m"
 # Template cache
 _TEMPLATE_CACHE = {}
 # Global state for interruption handling
 interruptible_cards = []
 previous_first_card_name = None
 previous_card_info = {}
+total_cards_detected = 0
 
 class EndOfCollection(Exception):
     """Raised when end-of-collection is detected"""
@@ -367,6 +385,8 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                 if row_number > 4:
                     if i == 0:
                         if previous_first_card_name is not None and card_name == previous_first_card_name:
+                            if DEBUG:
+                                print(f"End of collection detected: repeated first card '{card_name}' in row {row_number}")
                             previous_card_info = {}
                             raise EndOfCollection(partial=card_summary)
                         current_row_first_card = card_name
@@ -374,6 +394,8 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                         if (i - 1) in previous_card_info:
                             prev_name, prev_header_x = previous_card_info[i - 1]
                             if card_name == prev_name and count_header_x == prev_header_x:
+                                if DEBUG:
+                                    print(f"End of collection detected: repeated card '{card_name}' at position {i+1} in row {row_number}")
                                 previous_card_info = {}
                                 raise EndOfCollection(partial=card_summary)
                     if i < 5:
@@ -381,6 +403,11 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                     elif i == 5:
                         previous_card_info = {}
                 if card_name:
+                    global total_cards_detected
+                    total_cards_detected += 1
+                    if DEBUG:
+                        print(f"Row {row_number}, Card {i+1}: {GLOSSY_COLOR}NAME{RESET}: '{card_name}', {LIGHT_BLUE}COPIES{RESET}: {count}, {LIGHT_RED}DUSTABLE{RESET}: {dustable_value}")
+                        print(f"{RARITY_GOLD}Card Entries Found{RESET}: {total_cards_detected}")
                     desc_zone_width = w_desc
                     if card_name in card_summary:
                         card_summary[card_name][0].append(
@@ -456,7 +483,7 @@ def process_full_collection_phases(win) -> List:
                     if idx - 1 < len(scroll_pattern):
                         scroll_count = scroll_pattern[idx - 1]
                         for _ in range(scroll_count):
-                            # pyautogui.scroll(-1)
+                            pyautogui.scroll(-1)
                             time.sleep(SCROLL_DELAY)
                     time.sleep(AFTER_SCROLL_DELAY)
                 if idx == 7:
@@ -502,7 +529,7 @@ def process_full_collection_phases(win) -> List:
 
 def prepare_csv_data(cards_in_order) -> List:
     """Prepare CSV data from cards_in_order list"""
-    print("Preparing CSV file data...")
+    print("Finished processing cards. Preparing CSV file data...")
     csv_data = []
     try:
         from card_name_matcher import get_canonical_name_and_legacy_status
@@ -573,14 +600,14 @@ def write_csv(csv_data, message=None):
     print("Saving collection to CSV file...")
     try:
         import csv
-        csv_dir = Path("collection_csv")
+        csv_dir = Path(OUTPUT_DIR)
         csv_dir.mkdir(exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_[%H%M]")
         filename = f"{OUTPUT_CSV}_{timestamp}.csv"
         filepath = csv_dir / filename
         with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=[
-                "Rarity", "Name", "Legacy Pack", "Copies", "Dustable", 
+                "Rarity", "Name", "Legacy", "Copies", "Dustable",
                 "Archetype", "Card Frame", "Card Type", "Card Stats", "Effect"
             ])
             writer.writeheader()
@@ -588,7 +615,7 @@ def write_csv(csv_data, message=None):
                 writer.writerow({
                     "Rarity": row["rarity"],
                     "Name": row["name"],
-                    "Legacy Pack": row["legacy"],
+                    "Legacy": row["legacy"],
                     "Copies": row["copies"],
                     "Dustable": row["dustable"],
                     "Archetype": row["archetype"],
@@ -607,18 +634,6 @@ def write_csv(csv_data, message=None):
 def print_card_summary(cards_in_order: List):
     """Print final card summary with color-coded output"""
     print("Finished processing cards. Preparing final summary...")
-    LIGHT_BLUE = "\033[94m"
-    BASIC_COLOR = "\033[97m"
-    GLOSSY_COLOR = "\033[92m"
-    ROYAL_COLOR = "\033[93m"
-    LIGHT_RED = "\033[91m"
-    RESET = "\033[0m"
-    UNDERLINE_WHITE = "\033[4;97m"
-    RARITY_WHITE = "\033[1;97m"
-    RARITY_LIGHT_BLUE = "\033[1;96m"
-    RARITY_GOLD = "\033[1;93m"
-    RARITY_DARK_BLUE = "\033[1;94m"
-    RARITY_BOLD = "\033[1m"
     _ansi_re = re.compile(r"\x1b\[[0-9;]*m")
     def strip_ansi(s: str) -> str:
         return _ansi_re.sub("", s) if isinstance(s, str) else ""
@@ -740,10 +755,7 @@ def print_card_summary(cards_in_order: List):
         print(f"Gem Pack & Structure Deck: {len(gem_pack_cards)} unique cards")
     if legacy_pack_cards:
         print(f"Legacy Pack: {len(legacy_pack_cards)} unique cards")
-    if CSV:
-        csv_data = prepare_csv_data(cards_in_order)
-        if csv_data:
-            write_csv(csv_data)
+    print("")
 
 def signal_handler(sig, frame, cards_in_order_ref=None):
     """Handle Ctrl+C interruption and save partial results"""
@@ -772,28 +784,51 @@ def update_interruptible_cards(cards_in_order):
 
 def main():
     """Main entry point - process Master Duel collection"""
+    parser = argparse.ArgumentParser(description="Master Duel Collection Exporter")
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    parser.add_argument('--no-summary', action='store_true', help='Disable summary printing')
+    parser.add_argument('--output-dir', default='collection_csv', help='Output directory for CSV files')
+    args = parser.parse_args()
+
+    global DEBUG, SUMMARY, OUTPUT_DIR
+    DEBUG = args.debug
+    SUMMARY = not args.no_summary
+    OUTPUT_DIR = args.output_dir
+
     print("Starting Master Duel Collection Exporter...")
-    print("- Phase 1: Process first 4 rows without scrolling")
-    print("- Phase 2: Process remaining rows with scrolling")
-    print("Press Ctrl+C at any time to stop and see current results.")
+    sys.stdout.flush()
+    print("Processing collection visually via scrolling...")
+    sys.stdout.flush()
     cards_container = [[]]
     signal.signal(signal.SIGINT, lambda sig, frame: signal_handler(sig, frame, cards_container))
     win = find_game_window()
     if not win:
         print("Could not find Master Duel window. Please ensure the game is open and visible.")
         return
-    print("Game window found. Starting card detection and clicking process...")
+    print("Game window found. Starting card detection and analysis...")
+    sys.stdout.flush()
+    global total_cards_detected
+    total_cards_detected = 0
     try:
         cards_in_order = process_full_collection_phases(win)
         cards_container[0] = cards_in_order
         if SUMMARY:
             print_card_summary(cards_in_order)
+        if CSV:
+            csv_data = prepare_csv_data(cards_in_order)
+            if csv_data:
+                write_csv(csv_data)
         print("\n=== Process Complete ===")
-        print("The collection scanner has finished processing all rows.")
+        sys.stdout.flush()
+        print("The collection scanner has finished processing all cards!")
+        sys.stdout.flush()
     except KeyboardInterrupt:
         print("\n\n=== SCRIPT INTERRUPTED ===")
+        sys.stdout.flush()
         print("Processing was cancelled. Here is the summary of cards analyzed so far:")
+        sys.stdout.flush()
         print("-" * 50)
+        sys.stdout.flush()
         cards = cards_container[0] if cards_container[0] else interruptible_cards
         if SUMMARY:
             if cards:
@@ -807,6 +842,7 @@ def main():
             if csv_data:
                 write_csv(csv_data, f"Partial results exported to {OUTPUT_CSV}")
         print("\n=== PROCESSING STOPPED ===")
+        sys.stdout.flush()
         return
 
 if __name__ == "__main__":
