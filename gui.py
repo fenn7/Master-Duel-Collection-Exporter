@@ -123,6 +123,7 @@ class MasterDuelExporterApp:
         # Terminals
         self.execution_terminal = None  # For Create New Collection
         self.load_terminal = None  # For Load Collection
+        self.terminal_contents = {}  # To store terminal contents across page switches
         
         # Set application icon if available
         try:
@@ -233,7 +234,7 @@ class MasterDuelExporterApp:
         back_btn = ttk.Button(
             header_frame,
             text="← Back",
-            command=self.show_main_menu,
+            command=self._back_from_create,
             style='Small.TButton'
         )
         back_btn.place(x=0, y=0, anchor='nw')
@@ -330,7 +331,7 @@ class MasterDuelExporterApp:
             variable=self.debug_mode,
             command=self.log_debug_mode
         )
-        debug_check.grid(row=0, column=0, sticky='w', padx=0, pady=2)
+        debug_check.grid(row=0, column=0, sticky='w', padx=0, pady=0)
 
         # Print Summary checkbox
         self.print_summary = tk.BooleanVar(value=False)
@@ -340,7 +341,7 @@ class MasterDuelExporterApp:
             variable=self.print_summary,
             command=self.log_print_summary
         )
-        summary_check.grid(row=1, column=0, sticky='w', padx=0, pady=2)
+        summary_check.grid(row=1, column=0, sticky='w', padx=0, pady=0)
         
         # Terminal display frame
         terminal_frame = ttk.LabelFrame(
@@ -389,9 +390,13 @@ class MasterDuelExporterApp:
         scrollbar.pack(side='right', fill='y')
         self.execution_terminal.pack(side='left', fill='both', expand=True)
 
-        # Add initial message
-        self.log("Terminal initialised.", "info")
-        self.update_status("Ready to start a new export.")
+        # Restore previous content if available
+        self.restore_terminal_content(self.execution_terminal, 'execution')
+
+        # Add initial message only if not restored
+        if 'execution' not in self.terminal_contents:
+            self.log("Terminal initialised.", "info")
+            self.update_status("Ready to start a new export.")
 
     def load_existing_collection(self):
         """Handle Load a Collection button click"""
@@ -414,7 +419,7 @@ class MasterDuelExporterApp:
         back_btn = ttk.Button(
             header_frame,
             text="← Back",
-            command=self.show_main_menu,
+            command=self._back_from_load,
             style='Small.TButton'
         )
         back_btn.place(x=0, y=0, anchor='nw')
@@ -504,7 +509,7 @@ class MasterDuelExporterApp:
             text="EXECUTION LOG",
             padding=4
         )
-        terminal_frame.pack(fill='both', expand=True, padx=14, pady=(7, 14))
+        terminal_frame.pack(fill='both', expand=True, padx=14, pady=(15, 14))
 
         # Create text widget for terminal output
         self.load_terminal = tk.Text(
@@ -533,9 +538,13 @@ class MasterDuelExporterApp:
         scrollbar.pack(side='right', fill='y')
         self.load_terminal.pack(side='left', fill='both', expand=True)
 
-        # Add initial message
-        self.load_log("Terminal initialized.", "info")
-        self.load_log("Ready to load saved CSV.", "info")
+        # Restore previous content if available
+        self.restore_terminal_content(self.load_terminal, 'load')
+
+        # Add initial message only if not restored
+        if 'load' not in self.terminal_contents:
+            self.load_log("Terminal initialized.", "info")
+            self.load_log("Ready to load saved CSV.", "info")
 
         # Status message at the bottom
         self.update_status("Select a collection file to load")
@@ -552,6 +561,7 @@ class MasterDuelExporterApp:
             self.file_entry.delete(0, tk.END)
             self.file_entry.insert(0, filename)
             self.current_csv = filename
+            self.load_log("File selected: " + os.path.basename(filename), "info")
             if filename.lower().endswith('.csv'):
                 self.load_btn['state'] = 'normal'
                 self.update_btn['state'] = 'normal'
@@ -1083,8 +1093,43 @@ class MasterDuelExporterApp:
         else:
             self.log("Print summary DISABLED", "info")
 
+    def save_terminal_content(self, terminal, key):
+        """Save the content and tags of a terminal for later restoration"""
+        if not terminal:
+            return
+        terminal.configure(state='normal')
+        content = terminal.get('1.0', 'end-1c')
+        terminal.configure(state='disabled')
+        tags = []
+        for tag_name in terminal.tag_names():
+            ranges = terminal.tag_ranges(tag_name)
+            tags.append((tag_name, list(ranges)))
+        self.terminal_contents[key] = (content, tags)
 
-            
+    def restore_terminal_content(self, terminal, key):
+        """Restore saved content and tags to a terminal"""
+        if key not in self.terminal_contents:
+            return
+        content, tags = self.terminal_contents[key]
+        terminal.configure(state='normal')
+        terminal.delete('1.0', 'end')
+        terminal.insert('1.0', content)
+        self.root.update_idletasks()
+        for tag_name, ranges in tags:
+            for i in range(0, len(ranges), 2):
+                terminal.tag_add(tag_name, ranges[i], ranges[i+1])
+        terminal.see('end')
+        terminal.configure(state='disabled')
+
+    def _back_from_create(self):
+        self.save_terminal_content(self.execution_terminal, 'execution')
+        self.show_main_menu()
+
+    def _back_from_load(self):
+        self.save_terminal_content(self.load_terminal, 'load')
+        self.show_main_menu()
+
+
     def start_collection_scan(self):
         """Start the collection scanning process"""
         try:
