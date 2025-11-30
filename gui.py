@@ -746,7 +746,7 @@ class MasterDuelExporterApp:
             message: The message to display
             level: Log level ('info', 'warning', 'error')
         """
-        if self.load_terminal is None:
+        if self.load_terminal is None or not self.load_terminal.winfo_exists():
             print(f"[{level.upper()}] {message}")
             return
 
@@ -783,7 +783,7 @@ class MasterDuelExporterApp:
             message: The message to display
             level: Log level ('info', 'warning', 'error')
         """
-        if self.execution_terminal is None:
+        if self.execution_terminal is None or not self.execution_terminal.winfo_exists():
             print(f"[{level.upper()}] {message}")
             return
 
