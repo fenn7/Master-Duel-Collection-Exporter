@@ -880,7 +880,16 @@ class MasterDuelExporterApp:
                 dustable_entry['state'] = 'disabled'
                 self.update_dustable.set('')
 
+        def on_dustable_change(*args):
+            count_val = self.update_number.get()
+            if count_val:
+                max_dust = int(count_val)
+                current_dust = int(self.update_dustable.get() or 0)
+                if current_dust > max_dust:
+                    self.update_dustable.set(str(max_dust))
+
         self.update_number.trace('w', on_number_change)
+        self.update_dustable.trace('w', on_dustable_change)
 
         # On close
         def on_close():
