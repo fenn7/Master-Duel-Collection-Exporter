@@ -9,3 +9,5 @@ imgs/
 old/
 cache/
 collection_csv/
+package-lock.json
+package.json
