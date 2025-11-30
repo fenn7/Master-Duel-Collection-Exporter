@@ -25,7 +25,7 @@ import argparse
 
 # Configuration
 SCROLL_DELAY = 0
-AFTER_SCROLL_DELAY = 0.2
+AFTER_SCROLL_DELAY = 0.3
 CLICK_DESC_DELAY = 0
 WINDOW_TITLE_KEYWORD = "masterduel"
 OUTPUT_CSV = "collection"
@@ -100,6 +100,7 @@ def grab_region(region: Tuple[int, int, int, int]) -> np.ndarray:
 
 def load_template_cached(template_path: Path) -> Optional[np.ndarray]:
     """Load and cache template image to avoid repeated disk I/O"""
+    global scale_x, scale_y
     path_str = str(template_path)
     if path_str in _TEMPLATE_CACHE:
         return _TEMPLATE_CACHE[path_str]
@@ -107,15 +108,22 @@ def load_template_cached(template_path: Path) -> Optional[np.ndarray]:
         return None
     template = cv2.imread(path_str)
     if template is not None:
+        # Resize template based on scaling factors
+        fx = scale_x
+        fy = scale_y
+        if fx != 1.0 or fy != 1.0:
+            template = cv2.resize(template, None, fx=fx, fy=fy, interpolation=cv2.INTER_LINEAR)
         _TEMPLATE_CACHE[path_str] = template
     return template
 
 def ocr_text_region(img: np.ndarray, config: str = r"--oem 3 --psm 7") -> str:
     """Perform OCR on a preprocessed image region"""
+    global screen_scale
     if img is None or img.size == 0:
         return ""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    upscaled = cv2.resize(gray, (gray.shape[1] * 3, gray.shape[0] * 3), interpolation=cv2.INTER_CUBIC)
+    upscale_factor = int(3 * screen_scale)
+    upscaled = cv2.resize(gray, (gray.shape[1] * upscale_factor, gray.shape[0] * upscale_factor), interpolation=cv2.INTER_CUBIC)
     _, thresh = cv2.threshold(upscaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     try:
         result = pytesseract.image_to_string(thresh, lang="eng", config=config).strip()
@@ -161,7 +169,8 @@ def ocr_description_zone_card_info(desc_zone_img: np.ndarray, row_number: int = 
                                             header_x:header_x + count_region_w]
                 if count_region.size > 0:
                     count_gray = cv2.cvtColor(count_region, cv2.COLOR_BGR2GRAY)
-                    count_upscaled = cv2.resize(count_gray, (count_gray.shape[1] * 3, count_gray.shape[0] * 3),
+                    upscale_factor = int(3 * screen_scale)
+                    count_upscaled = cv2.resize(count_gray, (count_gray.shape[1] * upscale_factor, count_gray.shape[0] * upscale_factor),
                                                interpolation=cv2.INTER_CUBIC)
                     for thresh_img in [
                         cv2.threshold(count_upscaled, 120, 255, cv2.THRESH_BINARY_INV)[1],
@@ -186,11 +195,13 @@ def ocr_description_zone_card_info(desc_zone_img: np.ndarray, row_number: int = 
 
 def analyze_dism_area(dism_area_img: np.ndarray) -> int:
     """Extract dustable value from dismantle area using OCR"""
+    global screen_scale
     if dism_area_img is None or dism_area_img.size == 0:
         return 0
     try:
         gray = cv2.cvtColor(dism_area_img, cv2.COLOR_BGR2GRAY)
-        upscaled = cv2.resize(gray, (gray.shape[1] * 3, dism_area_img.shape[0] * 3),
+        upscale_factor = int(3 * screen_scale)
+        upscaled = cv2.resize(gray, (gray.shape[1] * upscale_factor, dism_area_img.shape[0] * upscale_factor),
                              interpolation=cv2.INTER_CUBIC)
         _, thresh = cv2.threshold(upscaled, 120, 255, cv2.THRESH_BINARY_INV)
         txt = pytesseract.image_to_string(
@@ -241,12 +252,21 @@ def determine_card_category(x_coord: int, desc_zone_width: float) -> str:
 
 def detect_full_collection_area(win):
     """Detect collection area coordinates using header template matching"""
+    global scale_x, scale_y
     left, top, width, height = win.left, win.top, win.width, win.height
+    # Compute scale based on actual window size
+    scale_x = width / 1600.0
+    scale_y = height / 900.0
+    if DEBUG:
+        print(f"DEBUG: Window size {width}x{height}, scales x:{scale_x}, y:{scale_y}")
     if left < 0 or top < 0:
         try:
             win.moveTo(8, 8)
             time.sleep(0.2)
             left, top, width, height = win.left, win.top, win.width, win.height
+            # Recompute scale if moved
+            scale_x = width / 1600.0
+            scale_y = height / 900.0
         except Exception:
             pass
     try:
@@ -262,21 +282,26 @@ def detect_full_collection_area(win):
     gray_header = cv2.cvtColor(header_template, cv2.COLOR_BGR2GRAY)
     res = cv2.matchTemplate(gray_window, gray_header, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, max_loc = cv2.minMaxLoc(res)
-    if max_val < 0.5:
+    if DEBUG:
+        print(f"DEBUG: Header template match - max_val: {max_val}, threshold: 0.5")
+    if max_val < 0.3:
         return None, None
     header_x, header_y = max_loc
     header_h, header_w = gray_header.shape[:2]
     collection_area_margin = int(header_w * 0.02)
     collection_area_x = header_x + collection_area_margin
     collection_area_w = int(header_w * 0.935)
-    collection_area_y = header_y + header_h + 10
-    collection_area_h = height - collection_area_y - 50
+    collection_area_y = header_y + header_h + int(10 * scale_y)
+    collection_area_h = height - collection_area_y - int(50 * scale_y)
     card_width = collection_area_w // 6
     card_height = collection_area_h // 5
+    if DEBUG:
+        print(f"DEBUG: Collection area - x:{collection_area_x}, y:{collection_area_y}, w:{collection_area_w}, h:{collection_area_h}, card_w:{card_width}, card_h:{card_height}")
     return (collection_area_x, collection_area_y, collection_area_w, collection_area_h), (card_width, card_height)
 
 def detect_and_capture_description_zone(window_img: np.ndarray) -> Optional[np.ndarray]:
     """Detect card description zone using card header template"""
+    global game_scale_x, game_scale_y
     card_header_template = load_template_cached(Path("templates/card_header.PNG"))
     if card_header_template is None:
         return None
@@ -284,21 +309,23 @@ def detect_and_capture_description_zone(window_img: np.ndarray) -> Optional[np.n
     gray_card_header = cv2.cvtColor(card_header_template, cv2.COLOR_BGR2GRAY)
     res = cv2.matchTemplate(gray_window, gray_card_header, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, max_loc = cv2.minMaxLoc(res)
-    if max_val < 0.4:
+    if DEBUG:
+        print(f"DEBUG: Card header template match - max_val: {max_val}, threshold: 0.4")
+    if max_val < 0.3:
         return None
     header_x, header_y = max_loc
     header_h, header_w = gray_card_header.shape[:2]
     window_h, window_w = window_img.shape[:2]
     desc_zone_x = header_x
-    desc_zone_y = header_y + header_h + 5
-    desc_zone_w = min(int(window_w * 0.22), header_w * 3)
-    desc_zone_h = int(int(window_h * 0.16) * 1.73)
+    desc_zone_y = header_y + header_h + int(5 * scale_y)
+    desc_zone_w = min(int(window_w * 0.22 * scale_x), int(header_w * 3))
+    desc_zone_h = int(int(window_h * 0.16 * scale_y) * 1.73)
     desc_zone_w = min(desc_zone_w, window_w - desc_zone_x)
     desc_zone_h = min(desc_zone_h, window_h - desc_zone_y)
     if desc_zone_w <= 0 or desc_zone_h <= 0:
         return None
     return window_img[desc_zone_y:desc_zone_y + desc_zone_h, 
-                     desc_zone_x:desc_zone_x + desc_zone_w]
+                      desc_zone_x:desc_zone_x + desc_zone_w]
 
 def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                                             collection_coords=None,
@@ -324,28 +351,33 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
     gray_header = cv2.cvtColor(header_template, cv2.COLOR_BGR2GRAY)
     res = cv2.matchTemplate(gray_window, gray_header, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, max_loc = cv2.minMaxLoc(res)
-    if max_val < 0.5:
+    if DEBUG:
+        print(f"DEBUG: Row header template match - max_val: {max_val}, threshold: 0.5")
+    if max_val < 0.3:
         return {}
     header_x, header_y = max_loc
     header_h, header_w = gray_header.shape[:2]
     if collection_coords is not None:
         card_area_x, card_area_y, card_area_w, card_area_h = map(int, collection_coords)
     else:
+        global game_scale_x, game_scale_y
         card_area_margin = int(header_w * 0.02)
         card_area_x = header_x + card_area_margin
         card_area_w = int(header_w * 0.935)
-        card_area_y = header_y + header_h + 10
-        card_area_h = height - card_area_y - 50
+        card_area_y = header_y + header_h + int(10 * scale_y)
+        card_area_h = height - card_area_y - int(50 * scale_y)
     estimated_card_width = card_area_w // 6
     estimated_card_height = int(estimated_card_width * 1.4)
     card_area_h = min(estimated_card_height + 20, height - card_area_y)
     if card_area_w <= 0 or card_area_h <= 0:
         return {}
-    card_area_img = full_window_img[card_area_y:card_area_y + card_area_h, 
+    card_area_img = full_window_img[card_area_y:card_area_y + card_area_h,
                                     card_area_x:card_area_x + card_area_w]
     area_h, area_w = card_area_img.shape[:2]
     card_width = area_w // 6
     card_height = min(area_h, int(card_width * 1.4))
+    if DEBUG:
+        print(f"DEBUG: Card area - x:{card_area_x}, y:{card_area_y}, w:{card_area_w}, h:{card_area_h}, img_w:{area_w}, img_h:{area_h}, card_w:{card_width}, card_h:{card_height}")
     start_y = max(0, (area_h - card_height) // 2)
     margin_x = int(card_width * 0.05)
     margin_y = int(card_height * 0.05)
@@ -790,12 +822,20 @@ def main():
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     parser.add_argument('--no-summary', action='store_true', help='Disable summary printing')
     parser.add_argument('--output-dir', default='collection_csv', help='Output directory for CSV files')
+    parser.add_argument('--screen-res', default='125%', help='Screen resolution percentage (e.g., 125%)')
+    parser.add_argument('--game-res', default='1600x900', help='In-game resolution (e.g., 1600x900)')
     args = parser.parse_args()
 
-    global DEBUG, SUMMARY, OUTPUT_DIR
+    global DEBUG, SUMMARY, OUTPUT_DIR, screen_scale, game_scale_x, game_scale_y
     DEBUG = args.debug
     SUMMARY = not args.no_summary
     OUTPUT_DIR = args.output_dir
+
+    # Compute scaling factors
+    baseline_screen_pct = 125.0
+    screen_scale = float(args.screen_res.rstrip('%')) / baseline_screen_pct
+    # scale_x and scale_y will be set based on actual window size
+    # Debug scales printed after detection
 
     print("Starting Master Duel Collection Exporter...")
     sys.stdout.flush()
@@ -811,6 +851,10 @@ def main():
     sys.stdout.flush()
     global total_cards_detected
     total_cards_detected = 0
+    # Scaling factors based on user resolutions
+    screen_scale = 1.0
+    scale_x = 1.0
+    scale_y = 1.0
     try:
         cards_in_order = process_full_collection_phases(win)
         cards_container[0] = cards_in_order
