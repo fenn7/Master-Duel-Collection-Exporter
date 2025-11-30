@@ -995,8 +995,8 @@ class MasterDuelExporterApp:
                     'Copies': self.format_copies(count, count if finish == 'Basic' else 0, count if finish == 'Glossy' else 0, count if finish == 'Royal' else 0),
                     'Dustable': str(dustable),
                     'Archetype': card_info.get("archetype") or '',
-                    'Card Type': card_type,
-                    'Subtype': card_info.get("humanReadableCardType", ""),
+                    'Card Frame': card_type,
+                    'Card Type': card_info.get("humanReadableCardType", ""),
                     'Card Stats': card_stats,
                     'Effect': card_info.get("desc", "").replace("\n", " ").replace("\r", " "),
                 }

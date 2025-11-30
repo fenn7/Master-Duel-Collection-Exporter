@@ -607,7 +607,7 @@ def write_csv(csv_data, message=None):
         filepath = csv_dir / filename
         with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=[
-                "Rarity", "Name", "Legacy Pack", "Copies", "Dustable",
+                "Rarity", "Name", "Legacy", "Copies", "Dustable",
                 "Archetype", "Card Frame", "Card Type", "Card Stats", "Effect"
             ])
             writer.writeheader()
@@ -615,7 +615,7 @@ def write_csv(csv_data, message=None):
                 writer.writerow({
                     "Rarity": row["rarity"],
                     "Name": row["name"],
-                    "Legacy Pack": row["legacy"],
+                    "Legacy": row["legacy"],
                     "Copies": row["copies"],
                     "Dustable": row["dustable"],
                     "Archetype": row["archetype"],
