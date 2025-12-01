@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 Master Duel Collection Scraper - Performance Optimized
-
 Detects card collection grid, captures thumbnails, extracts card info via OCR,
 and exports results with minimal latency and computational overhead.
 """
@@ -11,7 +10,6 @@ import sys
 import re
 import datetime
 from pathlib import Path
-from tkinter.font import BOLD
 from typing import List, Tuple, Optional, Dict
 from urllib.parse import quote
 import cv2
@@ -22,9 +20,8 @@ import pyautogui
 import pygetwindow as gw
 import requests
 import argparse
-import os
 
-# Configuration
+# Configuration constants
 SCROLL_DELAY = 0
 AFTER_SCROLL_DELAY = 0.3
 CLICK_DESC_DELAY = 0
@@ -34,7 +31,8 @@ DEBUG = False
 SUMMARY = True
 CSV = True
 OUTPUT_DIR = "collection_csv"
-# ANSI color codes
+
+# ANSI color codes for terminal output
 LIGHT_BLUE = "\033[94m"
 LIGHT_RED = "\033[91m"
 UNDERLINE = "\033[4m"
@@ -48,25 +46,22 @@ RARITY_LIGHT_BLUE = "\033[1;96m"
 RARITY_GOLD = "\033[1;93m"
 RARITY_DARK_BLUE = "\033[1;94m"
 RARITY_BOLD = "\033[1m"
-# Template cache
+
+# Arrow mapping for link markers
+ARROW_MAP = {
+    "Top": "↑", "Bottom": "↓", "Left": "←", "Right": "→",
+    "Top-Left": "↖", "Top-Right": "↗", "Bottom-Left": "↙", "Bottom-Right": "↘"
+}
+
+# Global state for scaling and interruption handling
 _TEMPLATE_CACHE = {}
-# Global state for interruption handling
 interruptible_cards = []
 previous_first_card_name = None
 previous_card_info = {}
 total_cards_detected = 0
-
-# Arrow mapping for linkmarkers
-ARROW_MAP = {
-    "Top": "↑",
-    "Bottom": "↓",
-    "Left": "←",
-    "Right": "→",
-    "Top-Left": "↖",
-    "Top-Right": "↗",
-    "Bottom-Left": "↙",
-    "Bottom-Right": "↘"
-}
+scale_x = 1.0
+scale_y = 1.0
+screen_scale = 1.0
 
 class EndOfCollection(Exception):
     """Raised when end-of-collection is detected"""
@@ -112,7 +107,7 @@ def grab_region(region: Tuple[int, int, int, int]) -> np.ndarray:
         raise
 
 def load_template_cached(template_path: Path) -> Optional[np.ndarray]:
-    """Load and cache template image to avoid repeated disk I/O"""
+    """Load and cache template image with scaling applied"""
     global scale_x, scale_y
     path_str = str(template_path)
     if path_str in _TEMPLATE_CACHE:
@@ -121,11 +116,8 @@ def load_template_cached(template_path: Path) -> Optional[np.ndarray]:
         return None
     template = cv2.imread(path_str)
     if template is not None:
-        # Resize template based on scaling factors
-        fx = scale_x
-        fy = scale_y
-        if fx != 1.0 or fy != 1.0:
-            template = cv2.resize(template, None, fx=fx, fy=fy, interpolation=cv2.INTER_LINEAR)
+        if scale_x != 1.0 or scale_y != 1.0:
+            template = cv2.resize(template, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
         _TEMPLATE_CACHE[path_str] = template
     return template
 
@@ -144,8 +136,7 @@ def ocr_text_region(img: np.ndarray, config: str = r"--oem 3 --psm 7") -> str:
     except Exception:
         return ""
 
-def ocr_description_zone_card_info(desc_zone_img: np.ndarray, row_number: int = 1,
-                                   return_count_header: bool = False) -> Tuple:
+def ocr_description_zone_card_info(desc_zone_img: np.ndarray, row_number: int = 1, return_count_header: bool = False) -> Tuple:
     """Extract card name and count from description zone"""
     if desc_zone_img is None or desc_zone_img.size == 0:
         return ("", 1, 0) if return_count_header else ("", 1)
@@ -178,22 +169,17 @@ def ocr_description_zone_card_info(desc_zone_img: np.ndarray, row_number: int = 
             count_region_w = header_w + 20 - int((header_w + 20) * 0.43)
             count_region_h = min(30, h - count_region_y)
             if count_region_y + count_region_h <= h and header_x + count_region_w <= w:
-                count_region = desc_zone_img[count_region_y:count_region_y + count_region_h,
-                                            header_x:header_x + count_region_w]
+                count_region = desc_zone_img[count_region_y:count_region_y + count_region_h, header_x:header_x + count_region_w]
                 if count_region.size > 0:
                     count_gray = cv2.cvtColor(count_region, cv2.COLOR_BGR2GRAY)
                     upscale_factor = int(3 * screen_scale)
-                    count_upscaled = cv2.resize(count_gray, (count_gray.shape[1] * upscale_factor, count_gray.shape[0] * upscale_factor),
-                                               interpolation=cv2.INTER_CUBIC)
+                    count_upscaled = cv2.resize(count_gray, (count_gray.shape[1] * upscale_factor, count_gray.shape[0] * upscale_factor), interpolation=cv2.INTER_CUBIC)
                     for thresh_img in [
                         cv2.threshold(count_upscaled, 120, 255, cv2.THRESH_BINARY_INV)[1],
                         cv2.threshold(count_upscaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
                     ]:
                         try:
-                            txt = pytesseract.image_to_string(
-                                thresh_img, 
-                                config=r"--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789x"
-                            ).strip()
+                            txt = pytesseract.image_to_string(thresh_img, config=r"--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789x").strip()
                             if "x" in txt.lower():
                                 num_part = txt.lower().split("x")[-1]
                                 if num_part.isdigit():
@@ -214,18 +200,14 @@ def analyze_dism_area(dism_area_img: np.ndarray) -> int:
     try:
         gray = cv2.cvtColor(dism_area_img, cv2.COLOR_BGR2GRAY)
         upscale_factor = int(3 * screen_scale)
-        upscaled = cv2.resize(gray, (gray.shape[1] * upscale_factor, dism_area_img.shape[0] * upscale_factor),
-                              interpolation=cv2.INTER_CUBIC)
+        upscaled = cv2.resize(gray, (gray.shape[1] * upscale_factor, dism_area_img.shape[0] * upscale_factor), interpolation=cv2.INTER_CUBIC)
         for thresh_img in [
             cv2.threshold(upscaled, 100, 255, cv2.THRESH_BINARY_INV)[1],
             cv2.threshold(upscaled, 140, 255, cv2.THRESH_BINARY_INV)[1],
             cv2.threshold(upscaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
         ]:
             try:
-                txt = pytesseract.image_to_string(
-                    thresh_img,
-                    config=r"--oem 3 --psm 10 -c tessedit_char_whitelist=0123456789"
-                ).strip()
+                txt = pytesseract.image_to_string(thresh_img, config=r"--oem 3 --psm 10 -c tessedit_char_whitelist=0123456789").strip()
                 if txt.isdigit():
                     return int(txt)
             except Exception:
@@ -254,12 +236,7 @@ def get_card_rarity_from_info(card_info: dict) -> str:
     misc_info = card_info.get("misc_info", [])
     for misc in misc_info:
         if "md_rarity" in misc:
-            rarity_map = {
-                "Common": "N ",
-                "Rare": "R ",
-                "Super Rare": "SR",
-                "Ultra Rare": "UR"
-            }
+            rarity_map = {"Common": "N ", "Rare": "R ", "Super Rare": "SR", "Ultra Rare": "UR"}
             return rarity_map.get(misc["md_rarity"], "N ")
     return "N "
 
@@ -276,7 +253,6 @@ def detect_full_collection_area(win):
     """Detect collection area coordinates using header template matching"""
     global scale_x, scale_y
     left, top, width, height = win.left, win.top, win.width, win.height
-    # Compute scale based on actual window size
     scale_x = width / 1600.0
     scale_y = height / 900.0
     if DEBUG:
@@ -288,7 +264,6 @@ def detect_full_collection_area(win):
             win.moveTo(8, 8)
             time.sleep(0.2)
             left, top, width, height = win.left, win.top, win.width, win.height
-            # Recompute scale if moved
             scale_x = width / 1600.0
             scale_y = height / 900.0
             if abs(scale_x - scale_y) > 0.01:
@@ -327,7 +302,6 @@ def detect_full_collection_area(win):
 
 def detect_and_capture_description_zone(window_img: np.ndarray) -> Optional[np.ndarray]:
     """Detect card description zone using card header template"""
-    global game_scale_x, game_scale_y
     card_header_template = load_template_cached(Path("templates/card_header.PNG"))
     if card_header_template is None:
         return None
@@ -346,20 +320,18 @@ def detect_and_capture_description_zone(window_img: np.ndarray) -> Optional[np.n
     desc_zone_y = header_y + header_h + int(5 * scale_y)
     desc_zone_w = min(int(window_w * 0.22), int(header_w * 3))
     desc_zone_h = int(int(window_h * 0.16) * 1.73)
-    desc_zone_h = int(desc_zone_h * 0.96)  # Reduce height by 4% from bottom
+    desc_zone_h = int(desc_zone_h * 0.96)
     desc_zone_w = min(desc_zone_w, window_w - desc_zone_x)
     desc_zone_h = min(desc_zone_h, window_h - desc_zone_y)
     if DEBUG:
         print(f"DEBUG: desc_zone at {scale_x:.2f}x{scale_y:.2f} - w:{desc_zone_w}, h:{desc_zone_h}")
     if desc_zone_w <= 0 or desc_zone_h <= 0:
         return None
-    return window_img[desc_zone_y:desc_zone_y + desc_zone_h, 
-                      desc_zone_x:desc_zone_x + desc_zone_w]
+    return window_img[desc_zone_y:desc_zone_y + desc_zone_h, desc_zone_x:desc_zone_x + desc_zone_w]
 
-def click_cards_and_extract_info_single_row(win, row_number: int = 1,
-                                            collection_coords=None,
-                                            card_dims=None) -> Dict[str, int]:
-    global previous_first_card_name, previous_card_info, game_width
+def click_cards_and_extract_info_single_row(win, row_number: int = 1, collection_coords=None, card_dims=None) -> Dict[str, int]:
+    """Click through cards in a single row and extract their information"""
+    global previous_first_card_name, previous_card_info, total_cards_detected
     left, top, width, height = win.left, win.top, win.width, win.height
     if left < 0 or top < 0:
         try:
@@ -388,7 +360,6 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
     if collection_coords is not None:
         card_area_x, card_area_y, card_area_w, card_area_h = map(int, collection_coords)
     else:
-        global game_scale_x, game_scale_y
         card_area_margin = int(header_w * 0.02)
         card_area_x = header_x + card_area_margin
         card_area_w = int(header_w * 0.935)
@@ -399,8 +370,7 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
     card_area_h = min(estimated_card_height + 20, height - card_area_y)
     if card_area_w <= 0 or card_area_h <= 0:
         return {}
-    card_area_img = full_window_img[card_area_y:card_area_y + card_area_h,
-                                    card_area_x:card_area_x + card_area_w]
+    card_area_img = full_window_img[card_area_y:card_area_y + card_area_h, card_area_x:card_area_x + card_area_w]
     area_h, area_w = card_area_img.shape[:2]
     card_width = area_w // 6
     card_height = min(area_h, int(card_width * 1.4))
@@ -423,38 +393,29 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
         click_x = left + card_area_x + card_x + card_width // 2
         click_y = top + card_area_y + start_y + card_height // 2
         try:
-             pyautogui.click(click_x, click_y)
-             time.sleep(CLICK_DESC_DELAY)
-             clicked_window_img = grab_region((left, top, width, height))
-             desc_zone_img = detect_and_capture_description_zone(clicked_window_img)
-             if DEBUG:
-                  debug_dir = Path(f"debug_images/{game_width}")
-                  debug_dir.mkdir(parents=True, exist_ok=True)
-                  cv2.imwrite(str(debug_dir / f"desc_zone_row{row_number}_card{i+1}.png"), desc_zone_img)
-             if desc_zone_img is not None:
+            pyautogui.click(click_x, click_y)
+            time.sleep(CLICK_DESC_DELAY)
+            clicked_window_img = grab_region((left, top, width, height))
+            desc_zone_img = detect_and_capture_description_zone(clicked_window_img)
+            if desc_zone_img is not None:
                 h_desc, w_desc = desc_zone_img.shape[:2]
                 original_dism_width = int(w_desc * 0.15)
                 original_dism_height = int(h_desc * 0.15)
                 original_dism_x = w_desc - original_dism_width
-                reduction_width = int(original_dism_height * 0.4) # 0.33)
+                reduction_width = int(original_dism_height * 0.4)
                 reduction_height = int(original_dism_height * 0.1)
                 refined_width = original_dism_width - reduction_width
                 refined_height = original_dism_height
                 original_dism_y = h_desc - original_dism_height + reduction_height
-                dism_area_img = desc_zone_img[original_dism_y:original_dism_y + refined_height,
-                                              original_dism_x:original_dism_x + refined_width]
-                if DEBUG:
-                    cv2.imwrite(str(debug_dir / f"dism_area_row{row_number}_card{i+1}.png"), dism_area_img)
-                card_name, count, count_header_x = ocr_description_zone_card_info(
-                      desc_zone_img, row_number=row_number, return_count_header=True
-                  )
+                dism_area_img = desc_zone_img[original_dism_y:original_dism_y + refined_height, original_dism_x:original_dism_x + refined_width]
+                card_name, count, count_header_x = ocr_description_zone_card_info(desc_zone_img, row_number=row_number, return_count_header=True)
                 if card_name:
-                     if last_card_name is not None and card_name == last_card_name and count_header_x == last_count_header_x:
-                         if DEBUG:
-                             print(f"End of collection detected: repeated card '{card_name}' in row {row_number} at position {i+1}")
-                         raise EndOfCollection(partial=card_summary)
-                     last_card_name = card_name
-                     last_count_header_x = count_header_x
+                    if last_card_name is not None and card_name == last_card_name and count_header_x == last_count_header_x:
+                        if DEBUG:
+                            print(f"End of collection detected: repeated card '{card_name}' in row {row_number} at position {i+1}")
+                        raise EndOfCollection(partial=card_summary)
+                    last_card_name = card_name
+                    last_count_header_x = count_header_x
                 card_rarity = ""
                 dustable_value = analyze_dism_area(dism_area_img)
                 if row_number > 1:
@@ -478,25 +439,16 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                     elif i == 5:
                         previous_card_info = {}
                 if card_name:
-                    global total_cards_detected
                     total_cards_detected += 1
                     if DEBUG:
                         print(f"Row {row_number}, Card {i+1}: {GLOSSY_COLOR}NAME{RESET}: '{card_name}', {LIGHT_BLUE}COPIES{RESET}: {count}, {LIGHT_RED}DUSTABLE{RESET}: {dustable_value}")
                         print(f"{RARITY_GOLD}Card Entries Found{RESET}: {total_cards_detected}")
                     desc_zone_width = w_desc
                     if card_name in card_summary:
-                        card_summary[card_name][0].append(
-                            [count, count_header_x, desc_zone_width, card_rarity]
-                        )
-                        card_summary[card_name] = (
-                            card_summary[card_name][0],
-                            max(card_summary[card_name][1], dustable_value),
-                        )
+                        card_summary[card_name][0].append([count, count_header_x, desc_zone_width, card_rarity])
+                        card_summary[card_name] = (card_summary[card_name][0], max(card_summary[card_name][1], dustable_value))
                     else:
-                        card_summary[card_name] = (
-                            [[count, count_header_x, desc_zone_width, card_rarity]],
-                            dustable_value,
-                        )
+                        card_summary[card_name] = ([[count, count_header_x, desc_zone_width, card_rarity]], dustable_value)
         except EndOfCollection:
             raise
         except Exception:
@@ -517,16 +469,9 @@ def process_full_collection_phases(win) -> List:
     cards_in_order = []
     for row_num in range(1, 5):
         row_offset = int(collection_area_h * 0.20 * (row_num - 1))
-        row_collection_coords = (
-            collection_area_x,
-            collection_area_y + row_offset,
-            collection_area_w,
-            collection_area_h - row_offset,
-        )
+        row_collection_coords = (collection_area_x, collection_area_y + row_offset, collection_area_w, collection_area_h - row_offset)
         try:
-            row_summary = click_cards_and_extract_info_single_row(
-                win, row_number=row_num, collection_coords=row_collection_coords, card_dims=card_dims
-            )
+            row_summary = click_cards_and_extract_info_single_row(win, row_number=row_num, collection_coords=row_collection_coords, card_dims=card_dims)
         except EndOfCollection as e:
             if getattr(e, "partial", None):
                 for cname, (count_list, dust_value) in e.partial.items():
@@ -557,12 +502,7 @@ def process_full_collection_phases(win) -> List:
                 cards_in_order.append((card_name, count_list, dustable_value))
         update_interruptible_cards(cards_in_order)
     phase2_start_offset = int(collection_area_h * 0.20 * 4)
-    phase2_collection_coords = (
-        collection_area_x,
-        collection_area_y + phase2_start_offset,
-        collection_area_w,
-        max(50, collection_area_h - phase2_start_offset),
-    )
+    phase2_collection_coords = (collection_area_x, collection_area_y + phase2_start_offset, collection_area_w, max(50, collection_area_h - phase2_start_offset))
     phase2_start_row = 5
     while True:
         try:
@@ -578,10 +518,7 @@ def process_full_collection_phases(win) -> List:
                 if idx == 7:
                     continue
                 try:
-                    row_summary = click_cards_and_extract_info_single_row(
-                        win, row_number=row_num, collection_coords=phase2_collection_coords,
-                        card_dims=card_dims
-                    )
+                    row_summary = click_cards_and_extract_info_single_row(win, row_number=row_num, collection_coords=phase2_collection_coords, card_dims=card_dims)
                 except EndOfCollection as e:
                     if getattr(e, "partial", None):
                         for cname, (count_list, dust_value) in e.partial.items():
@@ -701,10 +638,7 @@ def write_csv(csv_data, message=None):
         filename = f"{OUTPUT_CSV}_{timestamp}.csv"
         filepath = csv_dir / filename
         with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=[
-                "Rarity", "Name", "Legacy", "Copies", "Dustable",
-                "Archetype", "Card Frame", "Card Type", "Card Stats", "Effect"
-            ])
+            writer = csv.DictWriter(csvfile, fieldnames=["Rarity", "Name", "Legacy", "Copies", "Dustable", "Archetype", "Card Frame", "Card Type", "Card Stats", "Effect"])
             writer.writeheader()
             for row in csv_data:
                 writer.writerow({
@@ -740,12 +674,7 @@ def print_card_summary(cards_in_order: List):
         return s if v >= width else s + (" " * (width - v))
     def rarity_token_to_color(token: str) -> str:
         t = (token or "").strip()
-        rarity_colors = {
-            "N": RARITY_WHITE,
-            "R": RARITY_LIGHT_BLUE,
-            "SR": RARITY_GOLD,
-            "UR": RARITY_DARK_BLUE
-        }
+        rarity_colors = {"N": RARITY_WHITE, "R": RARITY_LIGHT_BLUE, "SR": RARITY_GOLD, "UR": RARITY_DARK_BLUE}
         return rarity_colors.get(t, RARITY_BOLD)
     cards_in_order = [(name, cl, dv) for name, cl, dv in cards_in_order if name and name.strip()]
     if not cards_in_order:
@@ -787,11 +716,7 @@ def print_card_summary(cards_in_order: List):
         counts_str_elems = []
         for count, x_coord, desc_zone_width, rarity in count_list:
             category = determine_card_category(x_coord, desc_zone_width)
-            category_colors = {
-                "Basic": BASIC_COLOR,
-                "Glossy": GLOSSY_COLOR,
-                "Royal": ROYAL_COLOR
-            }
+            category_colors = {"Basic": BASIC_COLOR, "Glossy": GLOSSY_COLOR, "Royal": ROYAL_COLOR}
             colored_category = f"{category_colors.get(category, '')}{category}{RESET}"
             counts_str_elems.append(f"{colored_category} x{count}")
         counts_str = ", ".join(counts_str_elems)
@@ -835,11 +760,7 @@ def print_card_summary(cards_in_order: List):
             name_field = pad_right_ansi(info["colored_name"], max_name_w)
             counts_field = pad_right_ansi(info["counts_str"], max_counts_w)
             dust_field = str(info["dustable_value"]).rjust(max_dust_w)
-            line = (
-                f"{idx_display} {rarity_field} {name_field} | "
-                f"{LIGHT_BLUE}COPIES{RESET}: {counts_field} | "
-                f"{LIGHT_RED}DUSTABLE{RESET}: x{dust_field}"
-            )
+            line = f"{idx_display} {rarity_field} {name_field} | {LIGHT_BLUE}COPIES{RESET}: {counts_field} | {LIGHT_RED}DUSTABLE{RESET}: x{dust_field}"
             print(line)
     _print_section("Gem Pack & Structure Deck", gem_pack_cards)
     _print_section("Legacy Pack", legacy_pack_cards)
@@ -886,18 +807,11 @@ def main():
     parser.add_argument('--output-dir', default='collection_csv', help='Output directory for CSV files')
     parser.add_argument('--game-res', default='1600x900', help='In-game resolution (e.g., 1600x900)')
     args = parser.parse_args()
-
-    global DEBUG, SUMMARY, OUTPUT_DIR, screen_scale, game_scale_x, game_scale_y, game_width
+    global DEBUG, SUMMARY, OUTPUT_DIR, screen_scale
     DEBUG = args.debug
     SUMMARY = not args.no_summary
     OUTPUT_DIR = args.output_dir
-    game_width = int(args.game_res.split('x')[0])
-
-    # Compute scaling factors
-    screen_scale = 1.0  # Screen resolution does not affect display sizes
-    # scale_x and scale_y will be set based on actual window size
-    # Debug scales printed after detection
-
+    screen_scale = 1.0
     print("Starting Master Duel Collection Exporter...")
     sys.stdout.flush()
     print("Processing collection visually via scrolling...")
@@ -912,10 +826,6 @@ def main():
     sys.stdout.flush()
     global total_cards_detected
     total_cards_detected = 0
-    # Scaling factors based on user resolutions
-    screen_scale = 1.0
-    scale_x = 1.0
-    scale_y = 1.0
     try:
         cards_in_order = process_full_collection_phases(win)
         cards_container[0] = cards_in_order
