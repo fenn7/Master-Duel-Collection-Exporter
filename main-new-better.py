@@ -421,11 +421,11 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                 original_dism_width = int(w_desc * 0.15)
                 original_dism_height = int(h_desc * 0.15)
                 original_dism_x = w_desc - original_dism_width
-                original_dism_y = h_desc - original_dism_height
                 reduction_width = int(original_dism_height * 0.4) # 0.33)
-                reduction_height = int(original_dism_height * 0.08) # 0.125)
+                reduction_height = int(original_dism_height * 0.1)
                 refined_width = original_dism_width - reduction_width
-                refined_height = original_dism_height - reduction_height
+                refined_height = original_dism_height
+                original_dism_y = h_desc - original_dism_height + reduction_height
                 dism_area_img = desc_zone_img[original_dism_y:original_dism_y + refined_height,
                                               original_dism_x:original_dism_x + refined_width]
                 if DEBUG:
