@@ -372,7 +372,7 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
         global game_scale_x, game_scale_y
         card_area_margin = int(header_w * 0.02)
         card_area_x = header_x + card_area_margin
-        card_area_w = int(header_w * 0.935)
+        card_area_w = int(header_w * 0.95)
         card_area_y = header_y + header_h + int(10 * scale_y)
         card_area_h = height - card_area_y - int(50 * scale_y)
     estimated_card_width = card_area_w // 6
@@ -417,7 +417,7 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                 original_dism_x = w_desc - original_dism_width
                 original_dism_y = h_desc - original_dism_height
                 reduction_width = int(original_dism_height * 0.33)
-                reduction_height = int(original_dism_height * 0.125)
+                reduction_height = int(original_dism_height * 0) # 0.125)
                 refined_width = original_dism_width - reduction_width
                 refined_height = original_dism_height - reduction_height
                 dism_area_img = desc_zone_img[original_dism_y:original_dism_y + refined_height,
