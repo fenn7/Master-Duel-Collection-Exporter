@@ -56,6 +56,18 @@ previous_first_card_name = None
 previous_card_info = {}
 total_cards_detected = 0
 
+# Arrow mapping for linkmarkers
+ARROW_MAP = {
+    "Top": "↑",
+    "Bottom": "↓",
+    "Left": "←",
+    "Right": "→",
+    "Top-Left": "↖",
+    "Top-Right": "↗",
+    "Bottom-Left": "↙",
+    "Bottom-Right": "↘"
+}
+
 class EndOfCollection(Exception):
     """Raised when end-of-collection is detected"""
     def __init__(self, partial=None):
@@ -398,6 +410,8 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
     margin_x = int(card_width * 0.05)
     margin_y = int(card_height * 0.05)
     card_summary = {}
+    last_card_name = None
+    last_count_header_x = None
     for i in range(6):
         card_x = i * card_width
         final_x = max(0, card_x + margin_x)
@@ -432,11 +446,18 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                 if DEBUG:
                     cv2.imwrite(str(debug_dir / f"dism_area_row{row_number}_card{i+1}.png"), dism_area_img)
                 card_name, count, count_header_x = ocr_description_zone_card_info(
-                     desc_zone_img, row_number=row_number, return_count_header=True
-                 )
+                      desc_zone_img, row_number=row_number, return_count_header=True
+                  )
+                if card_name:
+                     if last_card_name is not None and card_name == last_card_name and count_header_x == last_count_header_x:
+                         if DEBUG:
+                             print(f"End of collection detected: repeated card '{card_name}' in row {row_number} at position {i+1}")
+                         raise EndOfCollection(partial=card_summary)
+                     last_card_name = card_name
+                     last_count_header_x = count_header_x
                 card_rarity = ""
                 dustable_value = analyze_dism_area(dism_area_img)
-                if row_number > 4:
+                if row_number > 1:
                     if i == 0:
                         if previous_first_card_name is not None and card_name == previous_first_card_name:
                             if DEBUG:
@@ -480,11 +501,9 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
             raise
         except Exception:
             continue
-        if row_number > 4 and i < 6:
+        if row_number > 1 and i < 6:
             previous_card_info[i] = (card_name, count_header_x)
-        elif i == 6:
-            previous_card_info.clear()
-    if row_number > 4 and "current_row_first_card" in locals() and current_row_first_card:
+    if row_number > 1 and "current_row_first_card" in locals() and current_row_first_card:
         previous_first_card_name = current_row_first_card
     return card_summary
 
@@ -504,9 +523,25 @@ def process_full_collection_phases(win) -> List:
             collection_area_w,
             collection_area_h - row_offset,
         )
-        row_summary = click_cards_and_extract_info_single_row(
-            win, row_number=row_num, collection_coords=row_collection_coords, card_dims=card_dims
-        )
+        try:
+            row_summary = click_cards_and_extract_info_single_row(
+                win, row_number=row_num, collection_coords=row_collection_coords, card_dims=card_dims
+            )
+        except EndOfCollection as e:
+            if getattr(e, "partial", None):
+                for cname, (count_list, dust_value) in e.partial.items():
+                    found_existing = False
+                    for j, (existing_name, existing_count_list, existing_dustable) in enumerate(cards_in_order):
+                        if existing_name == cname:
+                            new_dustable = max(existing_dustable, dust_value)
+                            combined_count_list = existing_count_list + count_list
+                            cards_in_order[j] = (existing_name, combined_count_list, new_dustable)
+                            found_existing = True
+                            break
+                    if not found_existing:
+                        cards_in_order.append((cname, count_list, dust_value))
+            update_interruptible_cards(cards_in_order)
+            return cards_in_order
         for card_name, (count_list, dustable_value) in row_summary.items():
             if not card_name or card_name.strip() == "":
                 continue
@@ -631,7 +666,12 @@ def prepare_csv_data(cards_in_order) -> List:
                 card_stats = f" Rank {level}, "
             elif frame_type == "link":
                 linkval = card_info.get("linkval", "")
+                arrows = card_info.get("linkmarkers", [])
                 card_stats = f" Link {linkval}, "
+                if arrows:
+                    arrow_symbols = [ARROW_MAP.get(dir, "?") for dir in arrows]
+                    arrow_str = "".join(arrow_symbols)
+                    card_stats += f"{arrow_str}, "
             else:
                 card_stats = f" Level {level}, "
             card_stats += f"{attribute}, {race}, {atk}/{def_str}"

@@ -46,6 +46,18 @@ def get_card_rarity_from_info(card_info: dict) -> str:
             }
             return rarity_map.get(misc["md_rarity"], "N ")
     return "N "
+
+# Arrow mapping for linkmarkers
+ARROW_MAP = {
+    "Top": "↑",
+    "Bottom": "↓",
+    "Left": "←",
+    "Right": "→",
+    "Top-Left": "↖",
+    "Top-Right": "↗",
+    "Bottom-Left": "↙",
+    "Bottom-Right": "↘"
+}
 try:
     import win32com.client as win32
     HAS_WIN32 = True
@@ -1007,7 +1019,12 @@ class MasterDuelExporterApp:
                         card_stats = f" Rank {level}, "
                     elif frame_type == "link":
                         linkval = card_info.get("linkval", "")
+                        arrows = card_info.get("linkmarkers", [])
                         card_stats = f" Link {linkval}, "
+                        if arrows:
+                            arrow_symbols = [ARROW_MAP.get(dir, "?") for dir in arrows]
+                            arrow_str = "".join(arrow_symbols)
+                            card_stats += f"{arrow_str}, "
                     else:
                         card_stats = f" Level {level}, "
                     card_stats += f"{attribute}, {race}, {atk}/{def_str}"
