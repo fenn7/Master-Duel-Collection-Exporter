@@ -136,7 +136,7 @@ class MasterDuelExporterApp:
         self.save_path = self.default_save_dir
         header_frame = ttk.Frame(self.main_frame)
         header_frame.pack(fill='x', pady=(0, 14))
-        title = ttk.Label(header_frame, text="Create New Collection", style='Title.TLabel')
+        title = ttk.Label(header_frame, text="Create New Collection", style='Title.TLabel', anchor='center')
         title.pack(expand=True, fill='x', pady=(0, 2))
         back_btn = ttk.Button(header_frame, text="← Back", command=self._back_from_create, style='Small.TButton')
         back_btn.place(x=0, y=0, anchor='nw')
@@ -207,7 +207,7 @@ class MasterDuelExporterApp:
         self.clear_frame()
         header_frame = ttk.Frame(self.main_frame)
         header_frame.pack(fill='x', pady=(0, 14))
-        title = ttk.Label(header_frame, text="Load a Collection", style='Title.TLabel')
+        title = ttk.Label(header_frame, text="Load a Collection", style='Title.TLabel', anchor='center')
         title.pack(expand=True, fill='x', pady=(0, 2))
         back_btn = ttk.Button(header_frame, text="← Back", command=self._back_from_load, style='Small.TButton')
         back_btn.place(x=0, y=0, anchor='nw')
