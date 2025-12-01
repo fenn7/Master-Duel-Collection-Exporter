@@ -340,8 +340,7 @@ def detect_and_capture_description_zone(window_img: np.ndarray) -> Optional[np.n
 def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                                             collection_coords=None,
                                             card_dims=None) -> Dict[str, int]:
-    """Process a single row of 6 cards and extract card information"""
-    global previous_first_card_name, previous_card_info
+    global previous_first_card_name, previous_card_info, game_width
     left, top, width, height = win.left, win.top, win.width, win.height
     if left < 0 or top < 0:
         try:
@@ -408,9 +407,9 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
              clicked_window_img = grab_region((left, top, width, height))
              desc_zone_img = detect_and_capture_description_zone(clicked_window_img)
              if DEBUG:
-                 debug_dir = Path("debug_images")
-                 debug_dir.mkdir(exist_ok=True)
-                 cv2.imwrite(str(debug_dir / f"desc_zone_row{row_number}_card{i+1}.png"), desc_zone_img)
+                  debug_dir = Path(f"debug_images/{game_width}")
+                  debug_dir.mkdir(parents=True, exist_ok=True)
+                  cv2.imwrite(str(debug_dir / f"desc_zone_row{row_number}_card{i+1}.png"), desc_zone_img)
              if desc_zone_img is not None:
                 h_desc, w_desc = desc_zone_img.shape[:2]
                 original_dism_width = int(w_desc * 0.15)
@@ -841,10 +840,11 @@ def main():
     parser.add_argument('--game-res', default='1600x900', help='In-game resolution (e.g., 1600x900)')
     args = parser.parse_args()
 
-    global DEBUG, SUMMARY, OUTPUT_DIR, screen_scale, game_scale_x, game_scale_y
+    global DEBUG, SUMMARY, OUTPUT_DIR, screen_scale, game_scale_x, game_scale_y, game_width
     DEBUG = args.debug
     SUMMARY = not args.no_summary
     OUTPUT_DIR = args.output_dir
+    game_width = int(args.game_res.split('x')[0])
 
     # Compute scaling factors
     screen_scale = 1.0  # Screen resolution does not affect display sizes
