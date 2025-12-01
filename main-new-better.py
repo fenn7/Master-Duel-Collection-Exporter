@@ -205,13 +205,14 @@ def analyze_dism_area(dism_area_img: np.ndarray) -> int:
         upscaled = cv2.resize(gray, (gray.shape[1] * upscale_factor, dism_area_img.shape[0] * upscale_factor),
                               interpolation=cv2.INTER_CUBIC)
         for thresh_img in [
-            cv2.threshold(upscaled, 120, 255, cv2.THRESH_BINARY_INV)[1],
+            cv2.threshold(upscaled, 100, 255, cv2.THRESH_BINARY_INV)[1],
+            cv2.threshold(upscaled, 140, 255, cv2.THRESH_BINARY_INV)[1],
             cv2.threshold(upscaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
         ]:
             try:
                 txt = pytesseract.image_to_string(
                     thresh_img,
-                    config=r"--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789"
+                    config=r"--oem 3 --psm 10 -c tessedit_char_whitelist=0123456789"
                 ).strip()
                 if txt.isdigit():
                     return int(txt)
