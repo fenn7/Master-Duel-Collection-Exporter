@@ -268,6 +268,8 @@ def detect_full_collection_area(win):
     scale_y = height / 900.0
     if DEBUG:
         print(f"DEBUG: Window size {width}x{height}, scales x:{scale_x}, y:{scale_y}")
+    if abs(scale_x - scale_y) > 0.01:
+        print(f"Warning: Non-uniform scaling detected (x:{scale_x:.3f}, y:{scale_y:.3f}); desc_zone may not scale accurately.")
     if left < 0 or top < 0:
         try:
             win.moveTo(8, 8)
@@ -276,6 +278,8 @@ def detect_full_collection_area(win):
             # Recompute scale if moved
             scale_x = width / 1600.0
             scale_y = height / 900.0
+            if abs(scale_x - scale_y) > 0.01:
+                print(f"Warning: Non-uniform scaling detected (x:{scale_x:.3f}, y:{scale_y:.3f}); desc_zone may not scale accurately.")
         except Exception:
             pass
     try:
@@ -327,11 +331,13 @@ def detect_and_capture_description_zone(window_img: np.ndarray) -> Optional[np.n
     window_h, window_w = window_img.shape[:2]
     desc_zone_x = header_x
     desc_zone_y = header_y + header_h + int(5 * scale_y)
-    desc_zone_w = min(int(window_w * 0.22 * scale_x), int(header_w * 3))
-    desc_zone_h = int(int(window_h * 0.16 * scale_y) * 1.73)
-    desc_zone_h = int(desc_zone_h * 0.93)  # Reduce height by 7% from bottom
+    desc_zone_w = min(int(window_w * 0.22), int(header_w * 3))
+    desc_zone_h = int(int(window_h * 0.16) * 1.73)
+    desc_zone_h = int(desc_zone_h * 0.96)  # Reduce height by 4% from bottom
     desc_zone_w = min(desc_zone_w, window_w - desc_zone_x)
     desc_zone_h = min(desc_zone_h, window_h - desc_zone_y)
+    if DEBUG:
+        print(f"DEBUG: desc_zone at {scale_x:.2f}x{scale_y:.2f} - w:{desc_zone_w}, h:{desc_zone_h}")
     if desc_zone_w <= 0 or desc_zone_h <= 0:
         return None
     return window_img[desc_zone_y:desc_zone_y + desc_zone_h, 
@@ -372,7 +378,7 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
         global game_scale_x, game_scale_y
         card_area_margin = int(header_w * 0.02)
         card_area_x = header_x + card_area_margin
-        card_area_w = int(header_w * 0.95)
+        card_area_w = int(header_w * 0.935)
         card_area_y = header_y + header_h + int(10 * scale_y)
         card_area_h = height - card_area_y - int(50 * scale_y)
     estimated_card_width = card_area_w // 6
@@ -416,8 +422,8 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                 original_dism_height = int(h_desc * 0.15)
                 original_dism_x = w_desc - original_dism_width
                 original_dism_y = h_desc - original_dism_height
-                reduction_width = int(original_dism_height * 0.33)
-                reduction_height = int(original_dism_height * 0) # 0.125)
+                reduction_width = int(original_dism_height * 0.4) # 0.33)
+                reduction_height = int(original_dism_height * 0.08) # 0.125)
                 refined_width = original_dism_width - reduction_width
                 refined_height = original_dism_height - reduction_height
                 dism_area_img = desc_zone_img[original_dism_y:original_dism_y + refined_height,
