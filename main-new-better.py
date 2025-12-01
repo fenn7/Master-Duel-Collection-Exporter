@@ -22,6 +22,7 @@ import pyautogui
 import pygetwindow as gw
 import requests
 import argparse
+import os
 
 # Configuration
 SCROLL_DELAY = 0
@@ -202,13 +203,21 @@ def analyze_dism_area(dism_area_img: np.ndarray) -> int:
         gray = cv2.cvtColor(dism_area_img, cv2.COLOR_BGR2GRAY)
         upscale_factor = int(3 * screen_scale)
         upscaled = cv2.resize(gray, (gray.shape[1] * upscale_factor, dism_area_img.shape[0] * upscale_factor),
-                             interpolation=cv2.INTER_CUBIC)
-        _, thresh = cv2.threshold(upscaled, 120, 255, cv2.THRESH_BINARY_INV)
-        txt = pytesseract.image_to_string(
-            thresh, 
-            config=r"--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789"
-        ).strip()
-        return int(txt) if txt.isdigit() else 0
+                              interpolation=cv2.INTER_CUBIC)
+        for thresh_img in [
+            cv2.threshold(upscaled, 120, 255, cv2.THRESH_BINARY_INV)[1],
+            cv2.threshold(upscaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        ]:
+            try:
+                txt = pytesseract.image_to_string(
+                    thresh_img,
+                    config=r"--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789"
+                ).strip()
+                if txt.isdigit():
+                    return int(txt)
+            except Exception:
+                continue
+        return 0
     except Exception:
         return 0
 
@@ -320,6 +329,7 @@ def detect_and_capture_description_zone(window_img: np.ndarray) -> Optional[np.n
     desc_zone_y = header_y + header_h + int(5 * scale_y)
     desc_zone_w = min(int(window_w * 0.22 * scale_x), int(header_w * 3))
     desc_zone_h = int(int(window_h * 0.16 * scale_y) * 1.73)
+    desc_zone_h = int(desc_zone_h * 0.93)  # Reduce height by 7% from bottom
     desc_zone_w = min(desc_zone_w, window_w - desc_zone_x)
     desc_zone_h = min(desc_zone_h, window_h - desc_zone_y)
     if desc_zone_w <= 0 or desc_zone_h <= 0:
@@ -393,11 +403,15 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
         click_x = left + card_area_x + card_x + card_width // 2
         click_y = top + card_area_y + start_y + card_height // 2
         try:
-            pyautogui.click(click_x, click_y)
-            time.sleep(CLICK_DESC_DELAY)
-            clicked_window_img = grab_region((left, top, width, height))
-            desc_zone_img = detect_and_capture_description_zone(clicked_window_img)
-            if desc_zone_img is not None:
+             pyautogui.click(click_x, click_y)
+             time.sleep(CLICK_DESC_DELAY)
+             clicked_window_img = grab_region((left, top, width, height))
+             desc_zone_img = detect_and_capture_description_zone(clicked_window_img)
+             if DEBUG:
+                 debug_dir = Path("debug_images")
+                 debug_dir.mkdir(exist_ok=True)
+                 cv2.imwrite(str(debug_dir / f"desc_zone_row{row_number}_card{i+1}.png"), desc_zone_img)
+             if desc_zone_img is not None:
                 h_desc, w_desc = desc_zone_img.shape[:2]
                 original_dism_width = int(w_desc * 0.15)
                 original_dism_height = int(h_desc * 0.15)
@@ -408,10 +422,12 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1,
                 refined_width = original_dism_width - reduction_width
                 refined_height = original_dism_height - reduction_height
                 dism_area_img = desc_zone_img[original_dism_y:original_dism_y + refined_height,
-                                             original_dism_x:original_dism_x + refined_width]
+                                              original_dism_x:original_dism_x + refined_width]
+                if DEBUG:
+                    cv2.imwrite(str(debug_dir / f"dism_area_row{row_number}_card{i+1}.png"), dism_area_img)
                 card_name, count, count_header_x = ocr_description_zone_card_info(
-                    desc_zone_img, row_number=row_number, return_count_header=True
-                )
+                     desc_zone_img, row_number=row_number, return_count_header=True
+                 )
                 card_rarity = ""
                 dustable_value = analyze_dism_area(dism_area_img)
                 if row_number > 4:

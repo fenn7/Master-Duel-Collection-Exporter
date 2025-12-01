@@ -708,7 +708,7 @@ class MasterDuelExporterApp:
                             max_len = longest
                     # ensure a minimum width for readability
                     raw_width = max(3, min(MAX_WIDTH, int(max_len + PAD)))
-                    width = max(3, int(round(raw_width * 0.9)))
+                    width = max(3, int(round(raw_width * 0.95)))
                     col_letter = get_column_letter(col_idx)
                     ws.column_dimensions[col_letter].width = width
 
