@@ -13,3 +13,6 @@ package-lock.json
 package.json
 node_modules/
 debug_images/
+test_identifier/
+test_output/
+util/
