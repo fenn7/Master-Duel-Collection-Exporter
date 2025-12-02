@@ -6,7 +6,6 @@ import subprocess
 from typing import List, Tuple
 import threading
 import re
-import time
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -17,6 +16,9 @@ try:
     HAS_WIN32 = True
 except Exception:
     HAS_WIN32 = False
+
+print("Launching Master Duel Collection Exporter!")
+
 ARROW_MAP = {
     "Top": "↑","Bottom": "↓","Left": "←","Right": "→",
     "Top-Left": "↖","Top-Right": "↗","Bottom-Left": "↙","Bottom-Right": "↘"

@@ -14,7 +14,34 @@ from typing import List, Tuple, Optional, Dict
 from urllib.parse import quote
 import cv2
 import numpy as np
+import os
 import pytesseract
+
+def configure_tesseract():
+    """
+    Force all pytesseract calls to use the bundled tesseract.exe inside dependencies/tesseract.
+    """
+    print("Configuring pytesseract setup...")
+    base_dir = os.path.dirname(os.path.abspath(__file__))  # folder of main-new-better.py
+    tesseract_folder = os.path.join(base_dir, "dependencies", "tesseract")
+    tesseract_exe = os.path.join(tesseract_folder, "tesseract.exe")
+    tessdata_dir = os.path.join(tesseract_folder, "tessdata")
+
+    if not os.path.isfile(tesseract_exe):
+        raise FileNotFoundError(f"Bundled tesseract.exe not found at {tesseract_exe}")
+    if not os.path.isdir(tessdata_dir):
+        raise FileNotFoundError(f"tessdata folder not found at {tessdata_dir}")
+
+    # Force pytesseract to use the bundled binary
+    pytesseract.pytesseract.tesseract_cmd = tesseract_exe
+    # Tell tesseract where to find tessdata
+    os.environ["TESSDATA_PREFIX"] = tessdata_dir
+    print("Using bundled Tesseract:")
+    print(" pytesseract.tesseract_cmd =", pytesseract.pytesseract.tesseract_cmd)
+    print(" TESSDATA_PREFIX =", os.environ["TESSDATA_PREFIX"])
+
+configure_tesseract()
+
 import mss
 import pyautogui
 import pygetwindow as gw
@@ -121,17 +148,13 @@ def load_template_cached(template_path: Path) -> Optional[np.ndarray]:
         _TEMPLATE_CACHE[path_str] = template
     return template
 
-def ocr_text_region(img: np.ndarray, config: str = r"--oem 3 --psm 7") -> str:
-    """Perform OCR on a preprocessed image region"""
-    global screen_scale
+def ocr_text_region(img: np.ndarray, config: str = r"--oem 1 --psm 7") -> str:
+    """Perform OCR on an image region"""
     if img is None or img.size == 0:
         return ""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    upscale_factor = int(3 * screen_scale)
-    upscaled = cv2.resize(gray, (gray.shape[1] * upscale_factor, gray.shape[0] * upscale_factor), interpolation=cv2.INTER_CUBIC)
-    _, thresh = cv2.threshold(upscaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     try:
-        result = pytesseract.image_to_string(thresh, lang="eng", config=config).strip()
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        result = pytesseract.image_to_string(img_rgb, lang='eng', config=config).strip()
         return result.replace("\n", " ").replace("\x0c", "").strip()
     except Exception:
         return ""
@@ -274,7 +297,7 @@ def detect_full_collection_area(win):
         full_window_img = grab_region((left, top, width, height))
     except Exception as e:
         if DEBUG:
-            print(f"Failed to grab window region: {e}")
+            print(f"DEBUG: Failed to grab window region: {e}")
         return None, None
     header_template = load_template_cached(Path("templates/header.PNG"))
     if header_template is None:
