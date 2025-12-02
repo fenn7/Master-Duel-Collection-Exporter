@@ -36,10 +36,6 @@ def configure_tesseract():
     pytesseract.pytesseract.tesseract_cmd = tesseract_exe
     # Tell tesseract where to find tessdata
     os.environ["TESSDATA_PREFIX"] = tessdata_dir
-    print("Using bundled Tesseract:")
-    print(" pytesseract.tesseract_cmd =", pytesseract.pytesseract.tesseract_cmd)
-    print(" TESSDATA_PREFIX =", os.environ["TESSDATA_PREFIX"])
-
 configure_tesseract()
 
 import mss
@@ -822,25 +818,20 @@ def update_interruptible_cards(cards_in_order):
     global interruptible_cards
     interruptible_cards = cards_in_order[:]
 
-def main():
-    """Main entry point - process Master Duel collection"""
-    parser = argparse.ArgumentParser(description="Master Duel Collection Exporter")
-    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
-    parser.add_argument('--no-summary', action='store_true', help='Disable summary printing')
-    parser.add_argument('--output-dir', default='collection_csv', help='Output directory for CSV files')
-    parser.add_argument('--game-res', default='1600x900', help='In-game resolution (e.g., 1600x900)')
-    args = parser.parse_args()
+def run_scanner(debug=False, no_summary=False, output_dir='collection_csv', game_res='1600x900'):
+    """Run the scanner with given parameters"""
     global DEBUG, SUMMARY, OUTPUT_DIR, screen_scale
-    DEBUG = args.debug
-    SUMMARY = not args.no_summary
-    OUTPUT_DIR = args.output_dir
+    DEBUG = debug
+    SUMMARY = not no_summary
+    OUTPUT_DIR = output_dir
     screen_scale = 1.0
     print("Starting Master Duel Collection Exporter...")
     sys.stdout.flush()
     print("Processing collection visually via scrolling...")
     sys.stdout.flush()
     cards_container = [[]]
-    signal.signal(signal.SIGINT, lambda sig, frame: signal_handler(sig, frame, cards_container))
+    # Note: signal handling might not work in threaded environment
+    # signal.signal(signal.SIGINT, lambda sig, frame: signal_handler(sig, frame, cards_container))
     win = find_game_window()
     if not win:
         print("Could not find Master Duel window. Please ensure the game is open and visible.")
@@ -884,6 +875,16 @@ def main():
         print("\n=== PROCESSING STOPPED ===")
         sys.stdout.flush()
         return
+
+def main():
+    """Main entry point - process Master Duel collection"""
+    parser = argparse.ArgumentParser(description="Master Duel Collection Exporter")
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    parser.add_argument('--no-summary', action='store_true', help='Disable summary printing')
+    parser.add_argument('--output-dir', default='collection_csv', help='Output directory for CSV files')
+    parser.add_argument('--game-res', default='1600x900', help='In-game resolution (e.g., 1600x900)')
+    args = parser.parse_args()
+    run_scanner(args.debug, args.no_summary, args.output_dir, args.game_res)
 
 if __name__ == "__main__":
     main()

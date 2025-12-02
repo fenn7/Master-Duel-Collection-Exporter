@@ -4,6 +4,7 @@ import os
 import sys
 import subprocess
 from typing import List, Tuple
+import queue
 import threading
 import re
 import pandas as pd
@@ -669,14 +670,69 @@ class MasterDuelExporterApp:
             self.start_btn['state'] = 'disabled'
             self.stop_btn['state'] = 'normal'
             self.log("Initializing collection scan...", "info")
-            cmd = [sys.executable, '-u', 'main-new-better.py']
-            if self.debug_mode.get():
-                cmd.append('--debug')
-            if not self.print_summary.get():
-                cmd.append('--no-summary')
-            cmd.extend(['--output-dir', save_path, '--game-res', self.game_resolution.get()])
-            self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=os.getcwd())
-            threading.Thread(target=self.read_output, daemon=True).start()
+            if getattr(sys, 'frozen', False):
+                # Bundled mode: call scanner directly with output captured via queue
+                output_queue = queue.Queue()
+                def custom_print(*args, **kwargs):
+                    message = ' '.join(str(arg) for arg in args)
+                    if kwargs.get('end', '\n') == '\n':
+                        message += '\n'
+                    output_queue.put(message)
+                import builtins
+                old_print = builtins.print
+                builtins.print = custom_print
+                self.process = type('FakeProcess', (), {
+                    'terminate': lambda: None,
+                    'wait': lambda: None,
+                    'poll': lambda: None
+                })()
+                def run_scanner_thread():
+                    try:
+                        from main_new_better import run_scanner
+                        run_scanner(self.debug_mode.get(), not self.print_summary.get(), save_path, self.game_resolution.get())
+                    finally:
+                        builtins.print = old_print
+                        output_queue.put(None)  # signal end
+                threading.Thread(target=run_scanner_thread, daemon=True).start()
+                def read_from_queue():
+                    from datetime import datetime
+                    while True:
+                        line = output_queue.get()
+                        if line is None:
+                            self.scan_in_progress = False
+                            self.start_btn['state'] = 'normal'
+                            self.stop_btn['state'] = 'disabled'
+                            self.log("Execution completed.")
+                            break
+                        clean_line, ranges = parse_ansi(line)
+                        timestamp = datetime.now().strftime("%H:%M:%S")
+                        ts_prefix = f"[{timestamp}] "
+                        full_line = ts_prefix + clean_line
+                        self.execution_terminal.configure(state='normal')
+                        start_idx = self.execution_terminal.index('end-1c')
+                        self.execution_terminal.insert('end', full_line)
+                        ts_end = len(ts_prefix)
+                        self.execution_terminal.tag_add('timestamp', f"{start_idx}+0c", f"{start_idx}+{ts_end}c")
+                        for s, e, tag in ranges:
+                            adj_s = s + ts_end
+                            adj_e = e + ts_end
+                            tag_start = f"{start_idx}+{adj_s}c"
+                            tag_end = f"{start_idx}+{adj_e}c"
+                            self.execution_terminal.tag_add(tag, tag_start, tag_end)
+                        self.execution_terminal.see('end')
+                        self.execution_terminal.configure(state='disabled')
+                        self.root.update_idletasks()
+                threading.Thread(target=read_from_queue, daemon=True).start()
+            else:
+                # Normal mode: subprocess
+                cmd = [sys.executable, '-u', 'main-new-better.py']
+                if self.debug_mode.get():
+                    cmd.append('--debug')
+                if not self.print_summary.get():
+                    cmd.append('--no-summary')
+                cmd.extend(['--output-dir', save_path, '--game-res', self.game_resolution.get()])
+                self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=os.getcwd())
+                threading.Thread(target=self.read_output, daemon=True).start()
         except Exception as e:
             self.update_status(f"Error: {str(e)}")
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
