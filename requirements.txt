@@ -1,0 +1,13 @@
+pyinstaller
+pandas
+openpyxl
+requests
+numpy
+opencv-python
+pytesseract
+pyautogui
+pygetwindow
+mss
+rapidfuzz
+python-dateutil
+pywin32
