@@ -1,10 +1,9 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import os
-from pathlib import Path
 import sys
 import subprocess
-from typing import Optional, List, Tuple
+from typing import List, Tuple
 import threading
 import re
 import time
