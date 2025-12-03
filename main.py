@@ -22,13 +22,13 @@ def configure_tesseract():
     Force all pytesseract calls to use the bundled tesseract.exe.
     """
     print("Configuring pytesseract setup...")
-    base_dir = os.path.dirname(os.path.abspath(__file__))  # folder of main.py
     if getattr(sys, 'frozen', False):
-        # In bundled mode, tesseract is extracted to 'tesseract' folder
-        tesseract_folder = os.path.join(base_dir, "tesseract")
+        # Running as bundled executable
+        base_dir = sys._MEIPASS  # PyInstaller extracts to temp folder
     else:
-        # In script mode, use local dependencies/tesseract
-        tesseract_folder = os.path.join(base_dir, "dependencies", "tesseract")
+        # Running as script
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    tesseract_folder = os.path.join(base_dir, "dependencies", "tesseract")
     tesseract_exe = os.path.join(tesseract_folder, "tesseract.exe")
     tessdata_dir = os.path.join(tesseract_folder, "tessdata")
 
@@ -97,6 +97,14 @@ class EndOfCollection(Exception):
         super().__init__("EndOfCollection")
         self.partial = partial or {}
 
+def get_resource_path(relative_path):
+    """Get absolute path to resource, works for dev and PyInstaller"""
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
 def find_game_window(keyword: str = WINDOW_TITLE_KEYWORD) -> Optional[gw.Win32Window]:
     """Locate and activate the Master Duel game window"""
     try:
@@ -140,9 +148,11 @@ def load_template_cached(template_path: Path) -> Optional[np.ndarray]:
     path_str = str(template_path)
     if path_str in _TEMPLATE_CACHE:
         return _TEMPLATE_CACHE[path_str]
-    if not template_path.exists():
+    # USE RESOURCE PATH HERE:
+    actual_path = get_resource_path(path_str)
+    if not os.path.exists(actual_path):
         return None
-    template = cv2.imread(path_str)
+    template = cv2.imread(actual_path)
     if template is not None:
         if scale_x != 1.0 or scale_y != 1.0:
             template = cv2.resize(template, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
@@ -180,7 +190,7 @@ def ocr_description_zone_card_info(desc_zone_img: np.ndarray, row_number: int = 
     card_name = ocr_text_region(name_region) if name_region.size > 0 else ""
     count = 1
     header_x = 0
-    count_header_template = load_template_cached(Path("templates/count_header.PNG"))
+    count_header_template = load_template_cached(("templates/count_header.PNG"))
     if count_header_template is not None:
         gray_desc = cv2.cvtColor(desc_zone_img, cv2.COLOR_BGR2GRAY)
         gray_header = cv2.cvtColor(count_header_template, cv2.COLOR_BGR2GRAY)
@@ -300,7 +310,7 @@ def detect_full_collection_area(win):
         if DEBUG:
             print(f"DEBUG: Failed to grab window region: {e}")
         return None, None
-    header_template = load_template_cached(Path("templates/header.PNG"))
+    header_template = load_template_cached(("templates/header.PNG"))
     if header_template is None:
         return None, None
     gray_window = cv2.cvtColor(full_window_img, cv2.COLOR_BGR2GRAY)
@@ -326,7 +336,7 @@ def detect_full_collection_area(win):
 
 def detect_and_capture_description_zone(window_img: np.ndarray) -> Optional[np.ndarray]:
     """Detect card description zone using card header template"""
-    card_header_template = load_template_cached(Path("templates/card_header.PNG"))
+    card_header_template = load_template_cached(("templates/card_header.PNG"))
     if card_header_template is None:
         return None
     gray_window = cv2.cvtColor(window_img, cv2.COLOR_BGR2GRAY)
@@ -368,7 +378,7 @@ def click_cards_and_extract_info_single_row(win, row_number: int = 1, collection
         full_window_img = grab_region((left, top, width, height))
     except Exception:
         return {}
-    header_template = load_template_cached(Path("templates/header.PNG"))
+    header_template = load_template_cached(("templates/header.PNG"))
     if header_template is None:
         return {}
     gray_window = cv2.cvtColor(full_window_img, cv2.COLOR_BGR2GRAY)

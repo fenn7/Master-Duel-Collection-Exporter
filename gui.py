@@ -670,14 +670,25 @@ class MasterDuelExporterApp:
             self.start_btn['state'] = 'disabled'
             self.stop_btn['state'] = 'normal'
             self.log("Initializing collection scan...", "info")
-            # Always use subprocess for scanner
-            cmd = ['python', 'main.py']
+            
+            # Check if running as frozen executable or script
+            if getattr(sys, 'frozen', False):
+                # Running as compiled executable - import and run directly
+                self.log("Running scanner directly (bundled mode)...", "info")
+                threading.Thread(target=self.run_scanner_direct, args=(save_path,), daemon=True).start()
+                return
+            else:
+                # Running as script - use subprocess
+                cmd = ['python', 'main.py']
+            
             if self.debug_mode.get():
                 cmd.append('--debug')
             if not self.print_summary.get():
                 cmd.append('--no-summary')
             cmd.extend(['--output-dir', save_path, '--game-res', self.game_resolution.get()])
-            self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=os.getcwd())
+            
+            self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
+                                          text=True, cwd=os.getcwd())
             threading.Thread(target=self.read_output, daemon=True).start()
         except Exception as e:
             self.update_status(f"Error: {str(e)}")
@@ -686,6 +697,76 @@ class MasterDuelExporterApp:
             self.start_btn['state'] = 'normal'
             self.stop_btn['state'] = 'disabled'
         self.root.update_idletasks()
+
+    def run_scanner_direct(self, save_path):
+        """Run scanner directly without subprocess (for frozen executable)"""
+        from datetime import datetime
+        import io
+        import contextlib
+        
+        # Import the scanner
+        try:
+            from main import run_scanner
+        except ImportError as e:
+            self.log(f"Failed to import scanner: {e}", "error")
+            self.scan_in_progress = False
+            self.start_btn['state'] = 'normal'
+            self.stop_btn['state'] = 'disabled'
+            return
+        
+        # Capture stdout
+        class OutputCapture(io.StringIO):
+            def __init__(self, callback):
+                super().__init__()
+                self.callback = callback
+                
+            def write(self, text):
+                if text and text.strip():
+                    self.callback(text)
+                return super().write(text)
+        
+        def log_output(text):
+            clean_line, ranges = parse_ansi(text.rstrip('\n'))
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            ts_prefix = f"[{timestamp}] "
+            full_line = ts_prefix + clean_line + '\n'
+            
+            self.execution_terminal.configure(state='normal')
+            start_idx = self.execution_terminal.index('end-1c')
+            self.execution_terminal.insert('end', full_line)
+            
+            ts_end = len(ts_prefix)
+            self.execution_terminal.tag_add('timestamp', f"{start_idx}+0c", f"{start_idx}+{ts_end}c")
+            
+            for s, e, tag in ranges:
+                adj_s = s + ts_end
+                adj_e = e + ts_end
+                tag_start = f"{start_idx}+{adj_s}c"
+                tag_end = f"{start_idx}+{adj_e}c"
+                self.execution_terminal.tag_add(tag, tag_start, tag_end)
+            
+            self.execution_terminal.see('end')
+            self.execution_terminal.configure(state='disabled')
+            self.root.update_idletasks()
+        
+        # Redirect stdout and run scanner
+        output_capture = OutputCapture(log_output)
+        self.root.update()
+        try:
+            with contextlib.redirect_stdout(output_capture):
+                run_scanner(
+                    debug=self.debug_mode.get(),
+                    no_summary=not self.print_summary.get(),
+                    output_dir=save_path,
+                    game_res=self.game_resolution.get()
+                )
+        except Exception as e:
+            self.log(f"Scanner error: {e}", "error")
+        finally:
+            self.scan_in_progress = False
+            self.start_btn['state'] = 'normal'
+            self.stop_btn['state'] = 'disabled'
+            self.log("Execution completed.")
 
     def read_output(self):
         """Read subprocess stdout and append lines to execution terminal with ANSI tags."""
