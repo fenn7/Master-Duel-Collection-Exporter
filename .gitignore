@@ -1,15 +1,5 @@
-collection_checkpoint.csv
-venv/
+.venv/
 __pycache__/
-canonical_images/
-failed_redownloads_report.csv
-calibration_output/
-faiss_index/
-imgs/
-old/
 cache/
 collection_csv/
-package-lock.json
-package.json
-node_modules/
-debug_images/
+dependencies/tesseract/
